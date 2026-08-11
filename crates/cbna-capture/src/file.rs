@@ -49,11 +49,15 @@ impl Default for Interface {
     }
 }
 
+/// Generic over the reader so the parsers can be driven from memory as well as
+/// from disk. These are the file formats an analyst points at attacker-supplied
+/// input, so being able to feed them a `&[u8]` directly is what makes them
+/// cheap to fuzz and to unit-test.
 #[derive(Debug)]
-pub struct FileSource {
+pub struct FileSource<R: Read = File> {
     path: PathBuf,
     format: FileFormat,
-    reader: BufReader<File>,
+    reader: BufReader<R>,
     /// pcap: byte order of the file. pcapng: byte order of the current section.
     big_endian: bool,
     /// pcap only.
@@ -64,11 +68,26 @@ pub struct FileSource {
     finished: bool,
 }
 
-impl FileSource {
+impl FileSource<File> {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, CaptureError> {
         let path = path.as_ref().to_path_buf();
         let file = File::open(&path)?;
-        let mut reader = BufReader::with_capacity(1 << 20, file);
+        Self::from_reader_labelled(file, path)
+    }
+}
+
+impl<'a> FileSource<&'a [u8]> {
+    /// Read a capture out of memory. `path()` reports `<memory>`, which only
+    /// ever shows up in error messages.
+    pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, CaptureError> {
+        Self::from_reader_labelled(bytes, PathBuf::from("<memory>"))
+    }
+}
+
+impl<R: Read> FileSource<R> {
+    /// Read a capture from an arbitrary reader, labelled for error messages.
+    pub fn from_reader_labelled(reader: R, path: PathBuf) -> Result<Self, CaptureError> {
+        let mut reader = BufReader::with_capacity(1 << 20, reader);
 
         let mut magic_bytes = [0u8; 4];
         reader.read_exact(&mut magic_bytes)?;
@@ -424,7 +443,7 @@ impl FileSource {
     }
 }
 
-impl Source for FileSource {
+impl<R: Read> Source for FileSource<R> {
     fn link_type(&self) -> LinkType {
         self.link_type
     }

@@ -8,6 +8,7 @@
 //! it in-tree means the bounds checks are ours to audit.
 
 pub mod file;
+pub mod fuzz;
 pub mod writer;
 
 #[cfg(feature = "live")]

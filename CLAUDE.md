@@ -24,9 +24,9 @@ The `live` feature needs `vendor/npcap-sdk` on Windows; run
 - **`cbna-core` does no I/O and is not async.** Keep it that way; it is the only
   crate the analysis correctness depends on, and it stays trivially testable.
 - **Decoding never panics and never hard-fails a packet.** Parse errors become
-  entries in `DecodedPacket::warnings`; lower layers are still reported. There
-  is a fuzz-ish test (`packet::tests::arbitrary_bytes_never_panic`) guarding
-  this — do not weaken it.
+  entries in `DecodedPacket::warnings`; lower layers are still reported. This is
+  guarded by `packet::tests::arbitrary_bytes_never_panic` and by the fuzz
+  harnesses below — do not weaken either.
 - **Every length read from the wire is bounds-checked before allocating**, and
   every loop over attacker-controlled structure (VLAN stacks, IPv6 extension
   headers, DNS compression pointers, TLS extensions, pcapng blocks) is bounded.
@@ -39,6 +39,23 @@ The `live` feature needs `vendor/npcap-sdk` on Windows; run
 - **Unbounded growth is a bug.** Per-flow sample vectors, DNS name sets, HTTP
   header values and evidence lists are all capped. Add a cap to anything new
   that grows per packet.
+
+## Fuzzing
+
+Fuzz target bodies live in `cbna_core::fuzz` and `cbna_capture::fuzz`, **not** in
+`fuzz/fuzz_targets/*.rs`. Those files are six-line wrappers on purpose: the same
+functions are driven by `tests/fuzz_smoke.rs` in both crates, so the nightly-only
+fuzzer and the stable test suite can never diverge. Add a new parser, add an
+entry point there and wire up both sides.
+
+`fuzz/` is its own cargo workspace — folding it into the main one would put a
+nightly requirement on every ordinary build. `cargo fuzz run <target>` needs
+nightly plus `cargo install cargo-fuzz`; on stable the targets compile but fail
+to link, because libFuzzer supplies `main`.
+
+When the fuzzer finds a crash, add the input to `seeds()` in the matching
+`fuzz_smoke.rs` before fixing it. That is the only part of the corpus that
+survives, and it is what stops the bug coming back.
 
 ## Adding a detection
 

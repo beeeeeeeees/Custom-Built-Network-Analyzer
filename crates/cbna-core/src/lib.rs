@@ -10,6 +10,7 @@ pub mod analysis;
 pub mod bytes;
 pub mod error;
 pub mod flow;
+pub mod fuzz;
 pub mod link;
 pub mod net;
 pub mod packet;

@@ -193,12 +193,37 @@ seconds of a live run.
 
 ## Testing
 
-95 tests, run with `cargo test --workspace`. They cover the decoders against
+101 tests, run with `cargo test --workspace`. They cover the decoders against
 truncated, malformed, and hostile input (cyclic DNS compression pointers,
 implausible packet lengths, arbitrary byte fuzz across every link type), the
 beacon scorer against metronomes, jittered beacons, dropped check-ins and bursty
 noise, capture-file round trips in both byte orders and both timestamp
 resolutions, and flow direction resolution.
+
+### Fuzzing
+
+The parsers are the reason this project hand-rolls its decoders, so they get
+fuzzed rather than only unit-tested. `fuzz/` holds five [cargo-fuzz][cf] targets:
+frame decode across every link type, DNS, TLS, HTTP, and whole capture files.
+
+```bash
+cargo install cargo-fuzz          # needs a nightly toolchain
+cargo fuzz run capture_file       # or decode_frame / dns_message / tls_hello / http_message
+```
+
+`capture_file` is the one to run longest. It parses a pcap/pcapng straight out
+of memory and feeds every packet the reader yields into the decoder, so a length
+the reader accepts cannot quietly become a decoder crash downstream.
+
+The target bodies live in `cbna_core::fuzz` and `cbna_capture::fuzz`, not in the
+target files, because `cargo test` also runs them: `tests/fuzz_smoke.rs` in both
+crates drives the identical functions over a deterministic mutated corpus
+(25,000 inputs per target, fixed seed). That is not a substitute for a real fuzz
+run — it never grows its corpus — but it means the panic-freedom contract is
+checked on stable, on every platform, on every test run, and a crash the fuzzer
+finds can be pinned there as a seed and stay fixed.
+
+[cf]: https://github.com/rust-fuzz/cargo-fuzz
 
 ## License
 

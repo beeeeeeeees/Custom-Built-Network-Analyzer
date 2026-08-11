@@ -1,0 +1,51 @@
+[package]
+name = "cbna-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# Its own workspace: the fuzz targets need nightly and a sanitizer profile, and
+# folding them into the main workspace would drag that requirement onto every
+# ordinary `cargo build`.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+cbna-core = { path = "../crates/cbna-core" }
+cbna-capture = { path = "../crates/cbna-capture" }
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "decode_frame"
+path = "fuzz_targets/decode_frame.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "tls_hello"
+path = "fuzz_targets/tls_hello.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "dns_message"
+path = "fuzz_targets/dns_message.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "http_message"
+path = "fuzz_targets/http_message.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "capture_file"
+path = "fuzz_targets/capture_file.rs"
+test = false
+doc = false
