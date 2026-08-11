@@ -13,7 +13,11 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::fmt;
 
+/// Serialized lowercase so the JSON matches the `Display` impl and the terminal
+/// report. Consumers key off these strings — the dashboard styles severity
+/// badges by class name — so the two renderings must not diverge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Severity {
     Info,
     Low,
@@ -486,6 +490,22 @@ mod tests {
     use super::super::tests::{at, frame_udp_dns};
     use super::*;
     use crate::analysis::{AnalysisConfig, Analyzer};
+
+    #[test]
+    fn severity_serializes_lowercase_to_match_display() {
+        // The dashboard derives a CSS class from this string and the terminal
+        // prints the Display form; if they diverge, badges lose their colour
+        // silently and severity filters match nothing.
+        for sev in [
+            Severity::High,
+            Severity::Medium,
+            Severity::Low,
+            Severity::Info,
+        ] {
+            let json = serde_json::to_string(&sev).unwrap();
+            assert_eq!(json, format!("\"{sev}\""));
+        }
+    }
 
     #[test]
     fn severity_orders_high_first() {

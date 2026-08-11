@@ -5,204 +5,455 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CBNA — Network Analyzer</title>
 <style>
+  /* ---- Theme tokens ------------------------------------------------------
+     Dark is the base. Light applies either when the OS asks for it (unless the
+     user has explicitly forced dark) or when the user forces light. Every
+     colour in the sheet is a token; nothing below these blocks hardcodes one. */
   :root {
-    --bg: #0d1117; --panel: #161b22; --panel-2: #1c2230; --line: #2b3444;
-    --fg: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+    --bg: #0d1117; --panel: #161b22; --panel-2: #1c2230; --panel-3: #222b3a;
+    --line: #2b3444; --line-2: #3d4757;
+    --fg: #e6edf3; --muted: #8b949e; --accent: #58a6ff; --accent-fg: #0d1117;
     --high: #f85149; --medium: #d29922; --low: #58a6ff; --info: #8b949e;
     --ok: #3fb950;
+    --high-bg: #2a1416; --medium-bg: #2a2110; --sel-bg: #17293f; --hover: #1c2230;
+    --chip-bg: #1f2733; --tip-bg: #0b1017;
+    --grid: #222b38; --tl-shade: rgba(13, 17, 23, .66); --tl-hover: rgba(88, 166, 255, .16);
+    --shadow: 0 10px 34px rgba(1, 4, 9, .72);
     --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
   }
   @media (prefers-color-scheme: light) {
-    :root {
-      --bg: #f6f8fa; --panel: #ffffff; --panel-2: #f0f3f6; --line: #d8dee4;
-      --fg: #1f2328; --muted: #59636e; --accent: #0969da;
+    :root:not([data-theme="dark"]) {
+      --bg: #f6f8fa; --panel: #ffffff; --panel-2: #f0f3f6; --panel-3: #e7ecf1;
+      --line: #d8dee4; --line-2: #bcc6d0;
+      --fg: #1f2328; --muted: #59636e; --accent: #0969da; --accent-fg: #ffffff;
       --high: #cf222e; --medium: #9a6700; --low: #0969da; --info: #59636e;
       --ok: #1a7f37;
+      --high-bg: #fff1f0; --medium-bg: #fff8e5; --sel-bg: #ddf4ff; --hover: #f0f3f6;
+      --chip-bg: #eaeef2; --tip-bg: #ffffff;
+      --grid: #e4e9ee; --tl-shade: rgba(246, 248, 250, .7); --tl-hover: rgba(9, 105, 218, .12);
+      --shadow: 0 10px 34px rgba(31, 35, 40, .16);
     }
   }
+  :root[data-theme="light"] {
+    --bg: #f6f8fa; --panel: #ffffff; --panel-2: #f0f3f6; --panel-3: #e7ecf1;
+    --line: #d8dee4; --line-2: #bcc6d0;
+    --fg: #1f2328; --muted: #59636e; --accent: #0969da; --accent-fg: #ffffff;
+    --high: #cf222e; --medium: #9a6700; --low: #0969da; --info: #59636e;
+    --ok: #1a7f37;
+    --high-bg: #fff1f0; --medium-bg: #fff8e5; --sel-bg: #ddf4ff; --hover: #f0f3f6;
+    --chip-bg: #eaeef2; --tip-bg: #ffffff;
+    --grid: #e4e9ee; --tl-shade: rgba(246, 248, 250, .7); --tl-hover: rgba(9, 105, 218, .12);
+    --shadow: 0 10px 34px rgba(31, 35, 40, .16);
+  }
+
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--fg);
     font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
   }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  /* ---- Header ---------------------------------------------------------- */
   header {
-    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
-    padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
-    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 10px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+    position: sticky; top: 0; z-index: 30;
   }
-  header h1 { margin: 0; font-size: 16px; letter-spacing: .02em; }
+  header h1 { margin: 0; font-size: 16px; letter-spacing: .02em; white-space: nowrap; }
   header h1 span { color: var(--accent); }
   .src { font-family: var(--mono); font-size: 12px; color: var(--muted); }
-  .pill {
-    margin-left: auto; display: inline-flex; align-items: center; gap: 7px;
-    font-size: 12px; color: var(--muted);
-  }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .tools { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .pill { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
   .dot.live { background: var(--ok); animation: pulse 1.6s ease-in-out infinite; }
   .dot.err { background: var(--high); }
+  .dot.hold { background: var(--medium); }
   @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
+  @media (prefers-reduced-motion: reduce) { .dot.live { animation: none } }
 
-  main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+  input[type=search], input[type=text] {
+    background: var(--bg); border: 1px solid var(--line); color: var(--fg);
+    border-radius: 6px; padding: 5px 9px; font-size: 12.5px; font-family: var(--mono);
+  }
+  #q { width: 270px; max-width: 42vw; }
+  #q::placeholder { color: var(--muted); }
+
+  .btn {
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--fg);
+    border-radius: 6px; padding: 5px 10px; font: inherit; font-size: 12px; cursor: pointer;
+  }
+  .btn:hover { background: var(--panel-3); border-color: var(--line-2); }
+  .btn.on { border-color: var(--accent); color: var(--accent); }
+  .btn.tiny { padding: 1px 6px; font-size: 11px; border-radius: 4px; }
+
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .seg button {
+    background: var(--panel); border: 0; border-right: 1px solid var(--line); color: var(--muted);
+    font: inherit; font-size: 11.5px; padding: 4px 9px; cursor: pointer;
+  }
+  .seg button:last-child { border-right: 0; }
+  .seg button:hover { background: var(--panel-3); color: var(--fg); }
+  .seg button[aria-pressed="true"] { background: var(--panel-3); color: var(--accent); font-weight: 600; }
+
+  main { padding: 16px 20px 0; max-width: 1600px; margin: 0 auto; }
   .grid { display: grid; gap: 14px; }
-  .stats { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-bottom: 18px; }
-  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  .stats { grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); margin-bottom: 14px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 13px; }
   .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
-  .stat .v { font-size: 21px; font-weight: 600; margin-top: 3px; font-variant-numeric: tabular-nums; }
-  .stat .s { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+  .stat .v { font-size: 20px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .stat .s { font-size: 11px; color: var(--muted); font-family: var(--mono); min-height: 16px; }
 
   .cols { grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); align-items: start; }
-  section {
-    background: var(--panel); border: 1px solid var(--line);
-    border-radius: 8px; overflow: hidden;
-  }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
   section > h2 {
-    margin: 0; padding: 10px 14px; font-size: 12px; font-weight: 600;
+    margin: 0; padding: 9px 13px; font-size: 12px; font-weight: 600;
     text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
     border-bottom: 1px solid var(--line); background: var(--panel-2);
-    display: flex; justify-content: space-between; align-items: center;
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
   }
-  .body { max-height: 430px; overflow: auto; }
+  .hgroup { display: inline-flex; align-items: center; gap: 9px; text-transform: none; letter-spacing: 0; }
+  .meta { font-family: var(--mono); font-size: 11px; color: var(--muted); font-weight: 400;
+          text-transform: none; letter-spacing: 0; }
+  .body { max-height: 430px; overflow: auto; overscroll-behavior: contain; }
+  .body.tall { max-height: 560px; }
   .wide { grid-column: 1 / -1; }
 
+  /* ---- Tables ---------------------------------------------------------- */
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { text-align: left; padding: 7px 14px; border-bottom: 1px solid var(--line); }
-  th { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 500;
-       position: sticky; top: 0; background: var(--panel); }
-  tbody tr:last-child td { border-bottom: none; }
-  tbody tr:hover { background: var(--panel-2); }
+  th, td { text-align: left; padding: 6px 13px; border-bottom: 1px solid var(--line); }
+  th {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+    font-weight: 500; position: sticky; top: 0; z-index: 2; background: var(--panel); padding: 0;
+  }
+  th.pad { padding: 6px 13px; }
+  th.num, td.num { text-align: right; }
+  td.num { font-variant-numeric: tabular-nums; font-family: var(--mono); font-size: 12px; }
   td.mono, th.mono { font-family: var(--mono); font-size: 12px; }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--mono); font-size: 12px; }
-  .empty { padding: 22px 14px; color: var(--muted); font-size: 13px; }
+  td.wrap { word-break: break-all; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr.clickable { cursor: pointer; }
+  tbody tr.clickable:hover { background: var(--hover); }
+  tbody tr.sel { background: var(--sel-bg); }
+  tbody tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+  .sortbtn {
+    display: flex; width: 100%; align-items: center; gap: 4px; background: none; border: 0;
+    color: inherit; font: inherit; padding: 6px 13px; cursor: pointer; text-align: left;
+  }
+  th.num .sortbtn { justify-content: flex-end; }
+  .sortbtn:hover { color: var(--fg); background: var(--panel-3); }
+  th[aria-sort]:not([aria-sort="none"]) .sortbtn { color: var(--accent); }
+  .arrow { font-size: 9px; width: 8px; flex: none; }
+  .empty { padding: 18px 13px; color: var(--muted); font-size: 13px; }
+  .note { padding: 8px 13px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line);
+          background: var(--panel-2); }
 
-  .finding { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  .bar { height: 5px; background: var(--panel-3); border-radius: 3px; overflow: hidden; min-width: 46px; }
+  .bar > i { display: block; height: 100%; background: var(--accent); }
+  .split { display: flex; height: 5px; border-radius: 3px; overflow: hidden; background: var(--panel-3); min-width: 60px; }
+  .split > i.up { background: var(--medium); } .split > i.down { background: var(--accent); }
+
+  .tag {
+    font-family: var(--mono); font-size: 10.5px; padding: 1px 6px; border-radius: 10px;
+    background: var(--chip-bg); color: var(--muted); border: 1px solid var(--line);
+  }
+  .tag.outbound { color: var(--medium); } .tag.inbound { color: var(--high); }
+  .tag.external { color: var(--high); } .tag.internal { color: var(--muted); }
+  .tag.rst { color: var(--high); border-color: var(--high); }
+  .protos { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+
+  .copy {
+    background: none; border: 0; color: var(--muted); cursor: pointer; font: inherit;
+    font-size: 10.5px; padding: 0 4px; border-radius: 3px; opacity: 0; transition: opacity .12s;
+  }
+  tr:hover .copy, .copy:focus-visible, .kv:hover .copy { opacity: 1; }
+  .copy:hover { color: var(--accent); background: var(--panel-3); }
+
+  /* ---- Filter chips ---------------------------------------------------- */
+  .filterbar {
+    position: sticky; top: 51px; z-index: 20; display: flex; align-items: center; gap: 8px;
+    flex-wrap: wrap; padding: 9px 13px; margin-bottom: 14px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  }
+  .filterbar .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; max-width: 460px;
+    background: var(--chip-bg); border: 1px solid var(--line-2); color: var(--fg);
+    border-radius: 12px; padding: 2px 8px; font-size: 12px; font-family: var(--mono);
+    cursor: pointer; font-weight: 400;
+  }
+  .chip:hover { border-color: var(--high); color: var(--high); }
+  .chip .kind { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; }
+  .chip .val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip .x { color: var(--muted); font-size: 13px; line-height: 1; }
+  .chip:hover .x { color: var(--high); }
+
+  .banner {
+    display: flex; gap: 10px; align-items: flex-start; padding: 10px 13px; margin-bottom: 14px;
+    border: 1px solid var(--medium); border-radius: 8px; background: var(--medium-bg);
+    font-size: 13px; color: var(--fg);
+  }
+  .banner .bt { font-weight: 600; color: var(--medium); }
+
+  /* ---- Timeline -------------------------------------------------------- */
+  .tlwrap { position: relative; }
+  #timeline { width: 100%; height: 120px; display: block; cursor: crosshair; touch-action: none; }
+  .tip {
+    position: absolute; pointer-events: none; z-index: 5; background: var(--tip-bg);
+    border: 1px solid var(--line-2); border-radius: 6px; padding: 6px 9px; box-shadow: var(--shadow);
+    font-family: var(--mono); font-size: 11.5px; white-space: nowrap; color: var(--fg);
+  }
+  .tip .r { display: flex; justify-content: space-between; gap: 12px; }
+  .tip .r span:first-child { color: var(--muted); }
+  .tlfoot {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 8px 13px; border-top: 1px solid var(--line); background: var(--panel-2);
+    font-size: 12px; color: var(--muted);
+  }
+  .tlfoot .axis { font-family: var(--mono); font-size: 11px; }
+  .tlfoot .spacer { margin-left: auto; }
+  .caveat { font-size: 11.5px; color: var(--muted); font-style: italic; }
+
+  /* ---- Findings -------------------------------------------------------- */
+  .finding { padding: 11px 13px; border-bottom: 1px solid var(--line); border-left: 3px solid transparent; }
   .finding:last-child { border-bottom: none; }
+  .finding.high { border-left-color: var(--high); background: var(--high-bg); }
+  .finding.medium { border-left-color: var(--medium); }
+  .finding.low { border-left-color: var(--low); }
+  .finding.info { border-left-color: var(--info); }
   .finding .top { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; }
   .sev {
     font-size: 10px; text-transform: uppercase; letter-spacing: .07em; font-weight: 700;
-    padding: 2px 7px; border-radius: 4px; border: 1px solid currentColor;
+    padding: 1px 7px; border-radius: 4px; border: 1px solid currentColor; background: none;
+    cursor: pointer; font-family: inherit;
   }
   .sev.high { color: var(--high); } .sev.medium { color: var(--medium); }
   .sev.low { color: var(--low); } .sev.info { color: var(--info); }
   .finding .title { font-weight: 600; }
-  .finding .id { font-family: var(--mono); font-size: 11px; color: var(--muted); }
-  .finding .detail { color: var(--muted); margin-top: 5px; font-size: 13px; }
-  .finding ul { margin: 8px 0 0; padding-left: 18px; font-family: var(--mono); font-size: 11.5px; }
-  .finding li { margin: 2px 0; word-break: break-all; }
-
-  .bar { height: 5px; background: var(--panel-2); border-radius: 3px; overflow: hidden; min-width: 46px; }
-  .bar > i { display: block; height: 100%; background: var(--accent); }
-
-  #timeline { width: 100%; height: 96px; display: block; }
-  input[type=search] {
-    background: var(--bg); border: 1px solid var(--line); color: var(--fg);
-    border-radius: 5px; padding: 3px 8px; font-size: 12px; font-family: var(--mono); width: 190px;
+  .finding.high .title { font-size: 15px; }
+  .finding .fid { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .finding .detail { color: var(--muted); margin-top: 5px; font-size: 13px; max-width: 105ch; }
+  .evtoggle { margin-left: auto; }
+  .evlist { margin: 9px 0 0; padding: 0; list-style: none; }
+  .evrow {
+    display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
+    padding: 4px 0; border-top: 1px solid var(--line);
   }
+  .evrow .ev { font-family: var(--mono); font-size: 11.5px; word-break: break-all; flex: 1 1 340px; }
+  .pivots { display: inline-flex; gap: 5px; flex-wrap: wrap; }
+  .pivot {
+    background: var(--chip-bg); border: 1px solid var(--line); color: var(--accent);
+    border-radius: 4px; padding: 1px 7px; font: inherit; font-size: 11px; font-family: var(--mono);
+    cursor: pointer; white-space: nowrap; max-width: 260px; overflow: hidden; text-overflow: ellipsis;
+  }
+  .pivot:hover { border-color: var(--accent); }
+
+  /* ---- Flow detail drawer --------------------------------------------- */
+  .drawer {
+    position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 100vw); z-index: 40;
+    background: var(--panel); border-left: 1px solid var(--line-2); box-shadow: var(--shadow);
+    display: flex; flex-direction: column;
+  }
+  .drawer[hidden] { display: none; }
+  .drawer h3 {
+    margin: 0; padding: 11px 14px; font-size: 12px; text-transform: uppercase; letter-spacing: .07em;
+    color: var(--muted); border-bottom: 1px solid var(--line); background: var(--panel-2);
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  }
+  .drawer .dbody { overflow: auto; padding: 12px 14px 40px; }
+  .kv { display: grid; grid-template-columns: 108px 1fr; gap: 4px 10px; align-items: baseline; padding: 3px 0; }
+  .kv > .k { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  .kv > .v { font-family: var(--mono); font-size: 12px; word-break: break-all; }
+  .dgroup { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+  .dgroup > .gh { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 6px; }
+  .dactions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+  .backdrop { position: fixed; inset: 0; z-index: 39; background: var(--tl-shade); }
+  .backdrop[hidden] { display: none; }
+  @media (min-width: 1100px) { .backdrop { display: none; } }
+
+  .toast {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+    background: var(--tip-bg); border: 1px solid var(--line-2); color: var(--fg);
+    border-radius: 6px; padding: 7px 14px; font-size: 12.5px; box-shadow: var(--shadow); z-index: 60;
+  }
+  .toast[hidden] { display: none; }
+
   footer { padding: 16px 20px 34px; color: var(--muted); font-size: 12px; text-align: center; }
+  .sr {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip: rect(0 0 0 0); white-space: nowrap;
+  }
 </style>
 </head>
 <body>
 <header>
   <h1>CBNA <span>·</span> Custom Built Network Analyzer</h1>
   <div class="src" id="source">connecting…</div>
-  <div class="pill"><span class="dot" id="dot"></span><span id="statustext">waiting for data</span></div>
+  <div class="tools">
+    <input type="search" id="q" placeholder="search flows, hosts, names  ( / )" spellcheck="false" autocomplete="off" aria-label="Global search">
+    <span class="seg" id="metricseg" role="group" aria-label="Timeline metric">
+      <button type="button" data-metric="bytes">bytes</button><button type="button" data-metric="packets">packets</button>
+    </span>
+    <span class="seg" id="themeseg" role="group" aria-label="Colour theme">
+      <button type="button" data-theme="auto">auto</button><button type="button" data-theme="light">light</button><button type="button" data-theme="dark">dark</button>
+    </span>
+    <button type="button" class="btn" id="pause" aria-pressed="false">pause</button>
+    <span class="pill"><span class="dot" id="dot"></span><span id="statustext">waiting for data</span></span>
+  </div>
 </header>
 
 <main>
+  <div id="banner"></div>
   <div class="grid stats" id="stats"></div>
+  <div class="filterbar" id="filterbar" hidden></div>
 
-  <section class="wide" style="margin-bottom:14px">
-    <h2>Traffic over time <span id="tlmeta" class="src"></span></h2>
-    <canvas id="timeline"></canvas>
+  <section class="wide" id="tlsection" style="margin-bottom:14px">
+    <h2>Traffic over time <span class="hgroup"><span id="tlmeta" class="meta"></span></span></h2>
+    <div class="tlwrap">
+      <canvas id="timeline" aria-label="Traffic volume over time"></canvas>
+      <div id="tltip" class="tip" hidden></div>
+    </div>
+    <div class="tlfoot" id="tlfoot"></div>
   </section>
 
   <div class="grid cols">
     <section class="wide">
-      <h2>Findings <span id="findcount" class="src"></span></h2>
-      <div class="body" id="findings"></div>
+      <h2>Findings <span class="hgroup"><span id="findmeta" class="meta"></span><button type="button" class="btn tiny" id="findtoggle">collapse all</button></span></h2>
+      <div class="body tall" id="findings"></div>
+    </section>
+
+    <section class="wide" id="flowsection">
+      <h2>Flows <span class="hgroup"><span id="flowmeta" class="meta"></span></span></h2>
+      <div class="body tall" id="flows"></div>
     </section>
 
     <section>
-      <h2>Top talkers</h2>
+      <h2>Top talkers <span id="talkermeta" class="meta"></span></h2>
       <div class="body" id="talkers"></div>
     </section>
 
     <section>
-      <h2>Services</h2>
+      <h2>Services <span id="servicemeta" class="meta"></span></h2>
       <div class="body" id="services"></div>
     </section>
 
-    <section class="wide">
-      <h2>Flows <input type="search" id="flowfilter" placeholder="filter…" spellcheck="false"></h2>
-      <div class="body" id="flows"></div>
-    </section>
-
     <section>
-      <h2>DNS</h2>
+      <h2>DNS <span id="dnsmeta" class="meta"></span></h2>
       <div class="body" id="dns"></div>
     </section>
 
     <section>
-      <h2>TLS</h2>
+      <h2>TLS <span id="tlsmeta" class="meta"></span></h2>
       <div class="body" id="tls"></div>
     </section>
 
-    <section class="wide" id="beaconsection">
-      <h2>Beacon candidates</h2>
+    <section>
+      <h2>HTTP <span id="httpmeta" class="meta"></span></h2>
+      <div class="body" id="http"></div>
+    </section>
+
+    <section id="beaconsection">
+      <h2>Beacon candidates <span id="beaconmeta" class="meta"></span></h2>
       <div class="body" id="beacons"></div>
     </section>
   </div>
 </main>
 
+<div class="backdrop" id="backdrop" hidden></div>
+<aside class="drawer" id="drawer" hidden aria-label="Flow detail">
+  <h3><span>Flow detail</span><button type="button" class="btn tiny" id="drawerclose" aria-label="Close flow detail">esc ✕</button></h3>
+  <div class="dbody" id="drawerbody"></div>
+</aside>
+
+<div class="toast" id="toast" hidden role="status"></div>
+<div class="sr" id="live" role="status" aria-live="polite"></div>
+
 <footer id="footer"></footer>
 
 <script>
 "use strict";
+(function () {
 
-let lastGeneration = -1;
-let flowFilter = "";
-let latest = null;
+/* =====================================================================
+   CBNA dashboard.
+
+   Two rules shape everything below.
+
+   1. Nothing off the wire is ever parsed as markup. Hostnames, SNI, URIs,
+      user agents and DNS names are attacker-controlled; every one of them
+      reaches the DOM through textContent, and every element is built with
+      createElement. No HTML-parsing sink is used anywhere in this file, by
+      design — that is a security invariant, not a style choice.
+
+   2. The page polls every 2s and the user must never lose their place.
+      Rendering is a pure function of (report, ui-state) applied by keyed
+      reconciliation: rows are matched by a stable key, their text is patched
+      in place, and only genuinely departed rows are removed. Nothing is
+      wholesale-replaced, so scroll offsets, selection, focus and open panels
+      survive a refresh untouched.
+   ===================================================================== */
+
+const STORE_KEY = "cbna.ui.v2";
+const POLL_MS = 2000;
+
+/* ---------- UI state (the half of the render input that isn't data) ------ */
+const ui = {
+  theme: "auto",          // auto | light | dark
+  q: "",                  // global search text
+  filters: [],            // [{ kind, value }] — kind: host|service|scope|name|ja3|sev|window
+  sort: {},               // tableId -> { col, dir }   dir: 1 asc, -1 desc; absent = capture order
+  collapsed: {},          // findingId -> true (evidence hidden; detail always stays visible)
+  selectedFlow: null,     // flow key string
+  metric: "bytes",        // timeline metric: bytes | packets
+};
+
+const PERSIST = ["theme", "q", "filters", "sort", "collapsed", "selectedFlow", "metric"];
+
+let latest = null;        // last applied { generation, status, report }
+let pending = null;       // payload withheld while the user is mid-interaction
+let paused = false;       // explicit user freeze
+let dragging = false;     // mid-drag on the timeline
+let flowOrder = [];       // flow keys in current display order (arrow-key nav)
+let flowIndex = new Map();// flow key -> FlowSummary (unfiltered, for the drawer)
+let reportIndex = { hosts: new Set(), names: new Set(), flows: new Set() };
 
 const el = (id) => document.getElementById(id);
 
-/* Text nodes only — report content is attacker-influenced (hostnames, user
-   agents, URIs), so nothing from the wire is ever parsed as HTML. */
-function cell(text, cls) {
-  const td = document.createElement("td");
-  if (cls) td.className = cls;
-  td.textContent = text === null || text === undefined ? "" : String(text);
-  return td;
+function saveState() {
+  try {
+    const out = {};
+    for (const k of PERSIST) out[k] = ui[k];
+    localStorage.setItem(STORE_KEY, JSON.stringify(out));
+  } catch (_) { /* private mode / quota — the UI still works, it just forgets */ }
 }
 
-function table(headers, rows, aligns) {
-  if (!rows.length) {
-    const d = document.createElement("div");
-    d.className = "empty";
-    d.textContent = "Nothing observed.";
-    return d;
+function loadState() {
+  let raw = null;
+  try { raw = localStorage.getItem(STORE_KEY); } catch (_) { return; }
+  if (!raw) return;
+  let saved;
+  try { saved = JSON.parse(raw); } catch (_) { return; }
+  if (!saved || typeof saved !== "object") return;
+  if (["auto", "light", "dark"].includes(saved.theme)) ui.theme = saved.theme;
+  if (typeof saved.q === "string") ui.q = saved.q;
+  if (saved.metric === "packets" || saved.metric === "bytes") ui.metric = saved.metric;
+  if (typeof saved.selectedFlow === "string") ui.selectedFlow = saved.selectedFlow;
+  if (Array.isArray(saved.filters)) {
+    ui.filters = saved.filters
+      .filter((f) => f && typeof f.kind === "string" && typeof f.value === "string")
+      .slice(0, 24)
+      .map((f) => ({ kind: f.kind, value: f.value }));
   }
-  const t = document.createElement("table");
-  const thead = t.createTHead().insertRow();
-  headers.forEach((h, i) => {
-    const th = document.createElement("th");
-    th.textContent = h;
-    if (aligns && aligns[i] === "num") th.style.textAlign = "right";
-    thead.appendChild(th);
-  });
-  const tb = t.createTBody();
-  for (const row of rows) {
-    const tr = tb.insertRow();
-    row.forEach((v, i) => {
-      if (v instanceof HTMLElement) {
-        const td = document.createElement("td");
-        td.appendChild(v);
-        tr.appendChild(td);
-      } else {
-        tr.appendChild(cell(v, aligns ? aligns[i] : null));
-      }
-    });
+  if (saved.sort && typeof saved.sort === "object") {
+    for (const [k, v] of Object.entries(saved.sort)) {
+      if (v && typeof v.col === "string" && (v.dir === 1 || v.dir === -1)) ui.sort[k] = { col: v.col, dir: v.dir };
+    }
   }
-  return t;
+  if (saved.collapsed && typeof saved.collapsed === "object") {
+    for (const [k, v] of Object.entries(saved.collapsed)) if (v === true) ui.collapsed[k] = true;
+  }
 }
+
+/* ---------- Formatting -------------------------------------------------- */
 
 function bytes(n) {
   if (n === null || n === undefined) return "";
@@ -232,290 +483,1804 @@ function percent(ratio) {
   return "<0.001%";
 }
 
-function meter(value, max) {
-  const wrap = document.createElement("div");
-  wrap.className = "bar";
-  const fill = document.createElement("i");
-  fill.style.width = max > 0 ? `${Math.max(2, (value / max) * 100)}%` : "0";
-  wrap.appendChild(fill);
-  return wrap;
+const num = (n) => (typeof n === "number" && isFinite(n) ? n.toLocaleString() : "");
+
+/* Timestamps are rendered in UTC throughout: an analyst comparing this to
+   pcap timestamps or SIEM records should never have to guess a timezone. */
+function clockUtc(unixSecs) {
+  return new Date(unixSecs * 1000).toISOString().slice(11, 19);
+}
+function stampUtc(iso) {
+  return typeof iso === "string" && iso.length >= 19 ? `${iso.slice(0, 10)} ${iso.slice(11, 23)}` : "";
+}
+function epoch(iso) {
+  const t = Date.parse(iso);
+  return isFinite(t) ? t / 1000 : NaN;
 }
 
-function replace(id, node) {
-  const host = el(id);
-  host.textContent = "";
-  host.appendChild(node);
+/* "192.168.1.5:443" -> "192.168.1.5";  "[fe80::1]:443" -> "fe80::1" */
+function addrOf(hostport) {
+  if (!hostport) return "";
+  if (hostport.charAt(0) === "[") {
+    const close = hostport.indexOf("]");
+    return close > 0 ? hostport.slice(1, close) : hostport;
+  }
+  const colon = hostport.lastIndexOf(":");
+  return colon > 0 ? hostport.slice(0, colon) : hostport;
 }
 
-function renderStats(r, status) {
-  const s = r.summary;
+/* "a:1 <-> b:2 TCP" -> ["a:1", "b:2"] */
+function flowEndpoints(flowKey) {
+  if (typeof flowKey !== "string") return [];
+  const parts = flowKey.split(" <-> ");
+  if (parts.length !== 2) return [];
+  return [parts[0].trim(), parts[1].replace(/\s+[A-Z0-9]+$/, "").trim()];
+}
+
+/* ---------- DOM construction (createElement only) ----------------------- */
+
+function h(tag, opts, ...kids) {
+  const n = document.createElement(tag);
+  if (opts) {
+    if (opts.cls) n.className = opts.cls;
+    if (opts.text !== undefined && opts.text !== null) n.textContent = String(opts.text);
+    if (opts.title) n.title = opts.title;
+    if (opts.type) n.type = opts.type;
+    if (opts.attrs) for (const [k, v] of Object.entries(opts.attrs)) n.setAttribute(k, v);
+    if (opts.on) for (const [k, v] of Object.entries(opts.on)) n.addEventListener(k, v);
+  }
+  for (const kid of kids) if (kid !== null && kid !== undefined && kid !== false) n.append(kid);
+  return n;
+}
+
+function setText(node, value) {
+  const s = value === null || value === undefined ? "" : String(value);
+  if (node.textContent !== s) node.textContent = s;
+}
+
+function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+
+function emptyBlock(message) { return h("div", { cls: "empty", text: message }); }
+
+let toastTimer = 0;
+function toast(message) {
+  const t = el("toast");
+  setText(t, message);
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, 1600);
+}
+
+function copyValue(value, label) {
+  const text = String(value);
+  const done = () => toast(`copied ${label || "value"}`);
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done));
+  } else {
+    fallbackCopy(text, done);
+  }
+}
+
+function fallbackCopy(text, done) {
+  const ta = h("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "readonly");
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.append(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (_) { ok = false; }
+  ta.remove();
+  if (ok) done(); else toast("copy blocked by the browser");
+}
+
+function copyBtn(value, label) {
+  return h("button", {
+    cls: "copy", type: "button", text: "copy", title: `Copy ${label}`,
+    attrs: { "aria-label": `Copy ${label}` },
+    on: { click: (e) => { e.stopPropagation(); copyValue(value, label); } },
+  });
+}
+
+/* ---------- Theme ------------------------------------------------------- */
+
+function applyTheme() {
+  const root = document.documentElement;
+  if (ui.theme === "auto") root.removeAttribute("data-theme");
+  else root.setAttribute("data-theme", ui.theme);
+  for (const b of el("themeseg").querySelectorAll("button")) {
+    b.setAttribute("aria-pressed", String(b.dataset.theme === ui.theme));
+  }
+  drawTimeline();
+}
+/* =====================================================================
+   Filters
+   ===================================================================== */
+
+const KIND_LABEL = {
+  host: "host", service: "service", scope: "scope",
+  name: "name", ja3: "ja3", sev: "severity", window: "window",
+};
+
+function filterKey(f) { return `${f.kind} ${f.value}`; }
+
+function addFilter(kind, value, opts) {
+  const v = String(value);
+  if (!v) return;
+  const next = { kind, value: v };
+  if (opts && opts.meta) next.meta = opts.meta;
+  if (ui.filters.some((f) => filterKey(f) === filterKey(next))) return;
+  /* window is singular — a second one would always be an empty intersection */
+  if (kind === "window") ui.filters = ui.filters.filter((f) => f.kind !== "window");
+  ui.filters.push(next);
+  saveState();
+  rerender();
+}
+
+function removeFilter(target) {
+  ui.filters = ui.filters.filter((f) => filterKey(f) !== filterKey(target));
+  saveState();
+  rerender();
+}
+
+function clearFilters() {
+  if (!ui.filters.length && !ui.q) return;
+  ui.filters = [];
+  ui.q = "";
+  el("q").value = "";
+  saveState();
+  rerender();
+}
+
+/* A snapshot of everything the filter chips imply, computed once per render.
+   `kinds` drives the per-panel "not narrowed here" markers so the page never
+   implies a panel honoured a filter it structurally cannot evaluate. */
+function buildCtx(report) {
+  const q = ui.q.trim().toLowerCase();
+  const ctx = {
+    q,
+    hosts: new Set(), services: new Set(), scopes: new Set(),
+    names: new Set(), ja3s: new Set(), sevs: new Set(),
+    window: null,
+    kinds: new Set(),
+    derivedHosts: new Set(), derivedServices: new Set(), derivedNames: new Set(),
+  };
+  if (q) ctx.kinds.add("q");
+  for (const f of ui.filters) {
+    ctx.kinds.add(f.kind);
+    if (f.kind === "host") ctx.hosts.add(f.value);
+    else if (f.kind === "service") ctx.services.add(f.value);
+    else if (f.kind === "scope") ctx.scopes.add(f.value);
+    else if (f.kind === "name") ctx.names.add(f.value.toLowerCase());
+    else if (f.kind === "ja3") ctx.ja3s.add(f.value);
+    else if (f.kind === "sev") ctx.sevs.add(f.value);
+    else if (f.kind === "window" && f.meta) ctx.window = f.meta;
+  }
+  ctx.active = ctx.kinds.size > 0;
+
+  /* Flows are the join table: panels without a given field are narrowed
+     through the flows that survive the same filters. */
+  for (const f of report.top_flows) {
+    if (!flowMatches(f, ctx)) continue;
+    ctx.derivedHosts.add(addrOf(f.source));
+    ctx.derivedHosts.add(addrOf(f.destination));
+    if (f.service) ctx.derivedServices.add(f.service);
+    if (f.sni) ctx.derivedNames.add(f.sni.toLowerCase());
+  }
+  return ctx;
+}
+
+function flowText(f) {
+  return [f.flow, f.sni || "", f.ja3 || "", f.service || "", f.scope, (f.protocols || []).join(" ")]
+    .join(" ").toLowerCase();
+}
+
+function flowMatches(f, ctx) {
+  if (ctx.q && !flowText(f).includes(ctx.q)) return false;
+  if (ctx.hosts.size) {
+    const a = addrOf(f.source), b = addrOf(f.destination);
+    let hit = false;
+    for (const v of ctx.hosts) if (v === a || v === b) { hit = true; break; }
+    if (!hit) return false;
+  }
+  if (ctx.services.size && !ctx.services.has(f.service || "")) return false;
+  if (ctx.scopes.size && !ctx.scopes.has(f.scope)) return false;
+  if (ctx.names.size && !ctx.names.has((f.sni || "").toLowerCase())) return false;
+  if (ctx.ja3s.size && !ctx.ja3s.has(f.ja3 || "")) return false;
+  if (ctx.window) {
+    const from = epoch(f.first_seen), to = epoch(f.last_seen);
+    if (!isFinite(from) || !isFinite(to)) return false;
+    if (!(from <= ctx.window.to && to >= ctx.window.from)) return false;
+  }
+  return true;
+}
+
+/* Criteria a panel cannot evaluate, so the header can say so out loud.
+   `sev` is findings-only by construction and never counts as ignored. */
+function ignoredBy(ctx, handled) {
+  const out = [];
+  for (const k of ctx.kinds) {
+    if (k === "sev") continue;
+    if (!handled.includes(k)) out.push(KIND_LABEL[k] || k);
+  }
+  return out;
+}
+
+function panelMeta(id, shown, total, ctx, handled) {
+  const node = el(id);
+  if (!node) return;
+  clear(node);
+  const counted = shown === total ? `${num(total)}` : `${num(shown)} of ${num(total)}`;
+  node.append(h("span", { text: counted }));
+  const ignored = ctx ? ignoredBy(ctx, handled || []) : [];
+  if (ignored.length) {
+    node.append(h("span", {
+      text: "  ⚠ not narrowed",
+      title: `This panel has no field for: ${ignored.join(", ")}. Its rows are shown unnarrowed by ` +
+             `those filters rather than guessing a link the API does not provide.`,
+    }));
+  }
+}
+
+/* =====================================================================
+   Table engine — keyed reconciliation.
+
+   update() diffs against the rows already on screen: matched rows keep their
+   element (and therefore selection, focus and the container's scrollTop),
+   have their cell text patched only where it changed, and are moved into
+   position rather than rebuilt. That is what makes a 2s poll invisible.
+   ===================================================================== */
+
+function compareValues(a, b) {
+  const aEmpty = a === null || a === undefined || a === "";
+  const bEmpty = b === null || b === undefined || b === "";
+  if (aEmpty && bEmpty) return 0;
+  if (aEmpty) return 1;
+  if (bEmpty) return -1;
+  if (typeof a === "number" && typeof b === "number") return a - b;
+  return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" });
+}
+
+function cycleSort(tableId, colId, firstDir) {
+  const cur = ui.sort[tableId];
+  if (!cur || cur.col !== colId) ui.sort[tableId] = { col: colId, dir: firstDir };
+  else if (cur.dir === firstDir) ui.sort[tableId] = { col: colId, dir: -firstDir };
+  else delete ui.sort[tableId];   /* third click returns to capture order */
+  saveState();
+  rerender();
+}
+
+/* opts: { id, cols, key, emptyText, onRow, decorate } */
+function makeTable(host, opts) {
+  const rows = new Map();
+  const table = h("table");
+  const headRow = h("tr");
+  const thead = h("thead", null, headRow);
+  const tbody = h("tbody");
+  const empty = emptyBlock(opts.emptyText || "Nothing observed.");
+  empty.hidden = true;
+  table.append(thead, tbody);
+
+  for (const col of opts.cols) {
+    const th = h("th");
+    if (col.align === "num") th.classList.add("num");
+    if (col.sortValue) {
+      const arrow = h("span", { cls: "arrow" });
+      const btn = h("button", {
+        cls: "sortbtn", type: "button",
+        title: `Sort by ${col.label || col.id}`,
+        on: { click: () => cycleSort(opts.id, col.id, col.align === "num" ? -1 : 1) },
+      }, h("span", { text: col.label || "" }), arrow);
+      th.append(btn);
+      col._arrow = arrow;
+      col._th = th;
+      th.setAttribute("aria-sort", "none");
+    } else {
+      th.classList.add("pad");
+      th.textContent = col.label || "";
+    }
+    headRow.append(th);
+  }
+  host.append(table, empty);
+
+  function buildRow(key) {
+    const tr = h("tr");
+    const rec = { tr, tds: [], item: null, key };
+    for (const col of opts.cols) {
+      const td = h("td");
+      if (col.align === "num") td.className = "num";
+      else if (col.align === "mono") td.className = "mono";
+      if (col.cls) td.classList.add(col.cls);
+      tr.append(td);
+      rec.tds.push(td);
+    }
+    if (opts.onRow) {
+      tr.classList.add("clickable");
+      tr.tabIndex = 0;
+      tr.addEventListener("click", (e) => opts.onRow(rec.item, e));
+      tr.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); opts.onRow(rec.item, e); }
+      });
+    }
+    return rec;
+  }
+
+  function paint(rec, item) {
+    rec.item = item;
+    opts.cols.forEach((col, i) => {
+      const td = rec.tds[i];
+      if (col.build) col.build(td, item);
+      else setText(td, col.text ? col.text(item) : "");
+      if (col.title) {
+        const t = col.title(item) || "";
+        if (td.title !== t) td.title = t;
+      }
+    });
+    if (opts.decorate) opts.decorate(rec.tr, item, rec.key);
+  }
+
+  return {
+    table,
+    keys: () => Array.from(rows.keys()),
+    rowEl: (k) => (rows.get(k) ? rows.get(k).tr : null),
+    update(items) {
+      const sort = ui.sort[opts.id];
+      let list = items;
+      if (sort) {
+        const col = opts.cols.find((c) => c.id === sort.col && c.sortValue);
+        if (col) {
+          list = items
+            .map((it, i) => ({ it, i, v: col.sortValue(it) }))
+            .sort((a, b) => compareValues(a.v, b.v) * sort.dir || a.i - b.i)
+            .map((x) => x.it);
+        }
+      }
+      for (const col of opts.cols) {
+        if (!col._arrow) continue;
+        const on = sort && sort.col === col.id;
+        setText(col._arrow, on ? (sort.dir === 1 ? "▲" : "▼") : "");
+        col._th.setAttribute("aria-sort", on ? (sort.dir === 1 ? "ascending" : "descending") : "none");
+      }
+
+      empty.hidden = list.length > 0;
+      table.hidden = list.length === 0;
+
+      const seen = new Set();
+      list.forEach((item, i) => {
+        const key = String(opts.key(item));
+        seen.add(key);
+        let rec = rows.get(key);
+        if (!rec) { rec = buildRow(key); rows.set(key, rec); }
+        paint(rec, item);
+        const at = tbody.children[i];
+        if (at !== rec.tr) tbody.insertBefore(rec.tr, at || null);
+      });
+      for (const [key, rec] of Array.from(rows)) {
+        if (!seen.has(key)) { rec.tr.remove(); rows.delete(key); }
+      }
+      return list;
+    },
+  };
+}
+
+/* Shared cell builders ---------------------------------------------------- */
+
+function meterCell(td, value, max) {
+  let bar = td.firstChild;
+  if (!bar) { bar = h("div", { cls: "bar" }, h("i")); td.append(bar); }
+  bar.firstChild.style.width = max > 0 ? `${Math.max(2, (value / max) * 100)}%` : "0";
+}
+
+function splitCell(td, up, down) {
+  let bar = td.firstChild;
+  if (!bar) {
+    bar = h("div", { cls: "split" }, h("i", { cls: "up" }), h("i", { cls: "down" }));
+    td.append(bar);
+  }
+  const total = up + down;
+  const upPct = total > 0 ? (up / total) * 100 : 0;
+  bar.firstChild.style.width = `${upPct}%`;
+  bar.lastChild.style.width = `${100 - upPct}%`;
+  td.title = `${bytes(up)} up · ${bytes(down)} down`;
+}
+
+/* A cell whose text also acts as a pivot into a filter. */
+function filterCell(td, text, kind, value) {
+  let span = td.firstChild;
+  if (!span) {
+    span = h("span");
+    td.append(span);
+    td.style.cursor = "pointer";
+    td.addEventListener("click", (e) => {
+      if (!td._filter) return;
+      e.stopPropagation();
+      addFilter(td._filter.kind, td._filter.value);
+    });
+  }
+  setText(span, text);
+  td._filter = value ? { kind, value } : null;
+  const t = value ? `Filter to ${KIND_LABEL[kind]} ${value}` : "";
+  if (td.title !== t) td.title = t;
+}
+/* =====================================================================
+   Stats, integrity banner, filter chips
+   ===================================================================== */
+
+const statTiles = new Map();
+
+function renderStats(report, status) {
+  const s = report.summary;
   const items = [
-    ["Packets", s.packets.toLocaleString(), `${s.packets_per_sec.toFixed(1)}/s`],
+    ["Packets", num(s.packets), `${s.packets_per_sec.toFixed(1)}/s`],
     ["Volume", bytes(s.bytes), `${(s.bits_per_sec / 1e6).toFixed(2)} Mbit/s`],
-    ["Flows", s.flows.toLocaleString(), `${s.hosts.toLocaleString()} hosts`],
-    ["Duration", duration(s.duration_secs), s.first_seen ? s.first_seen.slice(11, 19) + " UTC" : ""],
-    ["TCP / UDP", `${s.counts.tcp.toLocaleString()} / ${s.counts.udp.toLocaleString()}`,
-      `${s.counts.icmp} icmp · ${s.counts.arp} arp`],
-    ["Findings", String(r.findings.length),
-      `${r.findings.filter(f => f.severity === "high").length} high`],
+    ["Flows", num(s.flows), `${num(s.hosts)} hosts`],
+    ["Duration", duration(s.duration_secs), s.first_seen ? `${s.first_seen.slice(11, 19)} UTC start` : "no timestamps"],
+    ["TCP / UDP", `${num(s.counts.tcp)} / ${num(s.counts.udp)}`,
+      `${num(s.counts.icmp)} icmp · ${num(s.counts.arp)} arp`],
+    ["Findings", String(report.findings.length),
+      `${report.findings.filter((f) => f.severity === "high").length} high`],
   ];
   if (status && status.live) {
-    items.push(["Dropped", status.dropped.toLocaleString(), status.dropped ? "capture is behind" : "no loss"]);
+    items.push(["Dropped", num(status.dropped), status.dropped ? "capture is behind" : "no loss"]);
   }
   const host = el("stats");
-  host.textContent = "";
-  for (const [k, v, sub] of items) {
-    const d = document.createElement("div");
-    d.className = "stat";
-    const kd = document.createElement("div"); kd.className = "k"; kd.textContent = k;
-    const vd = document.createElement("div"); vd.className = "v"; vd.textContent = v;
-    const sd = document.createElement("div"); sd.className = "s"; sd.textContent = sub;
-    d.append(kd, vd, sd);
-    host.appendChild(d);
+  const seen = new Set();
+  items.forEach(([k, v, sub], i) => {
+    seen.add(k);
+    let tile = statTiles.get(k);
+    if (!tile) {
+      const kd = h("div", { cls: "k", text: k });
+      const vd = h("div", { cls: "v" });
+      const sd = h("div", { cls: "s" });
+      tile = { root: h("div", { cls: "stat" }, kd, vd, sd), vd, sd };
+      statTiles.set(k, tile);
+    }
+    setText(tile.vd, v);
+    setText(tile.sd, sub);
+    const at = host.children[i];
+    if (at !== tile.root) host.insertBefore(tile.root, at || null);
+  });
+  for (const [k, tile] of Array.from(statTiles)) {
+    if (!seen.has(k)) { tile.root.remove(); statTiles.delete(k); }
   }
 }
 
-function renderTimeline(r) {
-  const c = el("timeline");
-  const data = r.timeline || [];
+/* Truncation and decode failures mean the analysis below is incomplete.
+   That belongs at the top of the page, not in a footnote. */
+function renderBanner(report, status) {
+  const host = el("banner");
+  const s = report.summary;
+  const problems = [];
+  if (s.truncated_packets > 0) {
+    problems.push(`${num(s.truncated_packets)} packet(s) were truncated by the capture snaplen, so their ` +
+      `upper-layer decode is partial.`);
+  }
+  if (s.decode_warnings > 0) {
+    problems.push(`${num(s.decode_warnings)} decode warning(s) were raised; some packets were not fully parsed.`);
+  }
+  if (status && status.live && status.dropped > 0) {
+    problems.push(`${num(status.dropped)} packet(s) were dropped by the capture engine and never reached analysis.`);
+  }
+  if (!problems.length) { clear(host); return; }
+  const text = `${problems.join(" ")} Counts and findings below are drawn from what was decoded, not from the ` +
+    `full traffic on the wire.`;
+  let box = host.firstChild;
+  if (!box) {
+    box = h("div", { cls: "banner" },
+      h("span", { cls: "bt", text: "Incomplete analysis" }),
+      h("span"));
+    host.append(box);
+  }
+  setText(box.lastChild, text);
+}
+
+function renderFilterBar(ctx, report) {
+  const bar = el("filterbar");
+  clear(bar);
+  const has = ui.filters.length > 0 || ui.q.trim().length > 0;
+  bar.hidden = !has;
+  if (!has) return;
+
+  bar.append(h("span", { cls: "lbl", text: "filters" }));
+
+  if (ui.q.trim()) {
+    bar.append(h("button", {
+      cls: "chip", type: "button", title: "Clear the search box",
+      on: { click: () => { ui.q = ""; el("q").value = ""; saveState(); rerender(); } },
+    }, h("span", { cls: "kind", text: "search" }), h("span", { cls: "val", text: ui.q.trim() }),
+       h("span", { cls: "x", text: "✕" })));
+  }
+
+  for (const f of ui.filters) {
+    const label = f.kind === "window" && f.meta
+      ? `${clockUtc(f.meta.from)}–${clockUtc(f.meta.to)} UTC`
+      : f.value;
+    const title = f.kind === "window"
+      ? "Flows whose first_seen/last_seen span overlaps this window. Click to remove."
+      : `Remove this ${KIND_LABEL[f.kind]} filter`;
+    bar.append(h("button", {
+      cls: "chip", type: "button", title,
+      on: { click: () => removeFilter(f) },
+    }, h("span", { cls: "kind", text: KIND_LABEL[f.kind] || f.kind }),
+       h("span", { cls: "val", text: label }),
+       h("span", { cls: "x", text: "✕" })));
+  }
+
+  bar.append(h("button", { cls: "btn tiny", type: "button", text: "clear all", on: { click: clearFilters } }));
+
+  /* top_flows is a top-N list. When it is capped, the flow-join used to
+     narrow other panels can miss rows, and saying so is cheaper than a
+     confidently wrong count. */
+  if (report.top_flows.length < report.summary.flows) {
+    bar.append(h("span", {
+      cls: "caveat",
+      text: `flow list is capped at ${num(report.top_flows.length)} of ${num(report.summary.flows)} flows — ` +
+            `panels narrowed via flows may be incomplete`,
+    }));
+  }
+}
+
+/* =====================================================================
+   Timeline — hover tooltip and drag-to-select window
+   ===================================================================== */
+
+let tlCols = [];          // [{ x0, x1, t0, t1, packets, bytes }]
+let tlSpan = null;        // { first, last, span, width }
+let tlHover = -1;
+let tlDrag = null;        // { fromX, toX } while dragging
+let tlRaf = 0;
+
+function timelineWindow() {
+  const f = ui.filters.find((x) => x.kind === "window");
+  return f && f.meta ? f.meta : null;
+}
+
+function drawTimeline() {
+  const canvas = el("timeline");
+  if (!canvas) return;
+  const data = latest && latest.report ? latest.report.timeline || [] : [];
   const dpr = window.devicePixelRatio || 1;
-  const w = c.clientWidth || 900, h = 96;
-  c.width = w * dpr; c.height = h * dpr;
-  const ctx = c.getContext("2d");
-  ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, w, h);
+  const w = canvas.clientWidth || 900;
+  const hgt = 120;
+  canvas.width = Math.max(1, Math.round(w * dpr));
+  canvas.height = Math.round(hgt * dpr);
+  const ctx2d = canvas.getContext("2d");
+  if (!ctx2d) return;
+  ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx2d.clearRect(0, 0, w, hgt);
 
   const css = getComputedStyle(document.documentElement);
   const accent = css.getPropertyValue("--accent").trim();
-  const line = css.getPropertyValue("--line").trim();
+  const lineCol = css.getPropertyValue("--line").trim();
+  const gridCol = css.getPropertyValue("--grid").trim();
+  const mutedCol = css.getPropertyValue("--muted").trim();
+  const shade = css.getPropertyValue("--tl-shade").trim();
+  const hoverCol = css.getPropertyValue("--tl-hover").trim();
 
   if (!data.length) {
-    el("tlmeta").textContent = "";
-    ctx.fillStyle = css.getPropertyValue("--muted").trim();
-    ctx.font = "12px system-ui";
-    ctx.fillText("No timestamped traffic yet.", 14, h / 2);
+    tlCols = []; tlSpan = null;
+    setText(el("tlmeta"), "");
+    ctx2d.fillStyle = mutedCol;
+    ctx2d.font = "12px system-ui, sans-serif";
+    ctx2d.fillText("No timestamped traffic in this capture.", 13, hgt / 2);
+    renderTimelineFoot();
     return;
   }
 
   /* Buckets are per-second and sparse; fill the gaps so an idle stretch
      reads as idle rather than being compressed away. */
-  const first = data[0][0], last = data[data.length - 1][0];
+  const first = data[0][0];
+  const last = data[data.length - 1][0];
   const span = Math.max(1, last - first + 1);
   const cols = Math.min(span, Math.max(60, Math.floor(w / 3)));
   const per = span / cols;
-  const buckets = new Array(cols).fill(0);
-  for (const [sec, , byteCount] of data) {
-    const i = Math.min(cols - 1, Math.floor((sec - first) / per));
-    buckets[i] += byteCount;
-  }
-  const max = Math.max(...buckets, 1);
-  const bw = w / cols;
-
-  ctx.strokeStyle = line;
-  ctx.beginPath(); ctx.moveTo(0, h - 0.5); ctx.lineTo(w, h - 0.5); ctx.stroke();
-
-  ctx.fillStyle = accent;
+  const colW = w / cols;
+  tlCols = new Array(cols);
   for (let i = 0; i < cols; i++) {
-    const bh = (buckets[i] / max) * (h - 10);
-    if (bh <= 0) continue;
-    ctx.fillRect(i * bw, h - bh, Math.max(1, bw - 0.6), bh);
+    tlCols[i] = {
+      x0: i * colW, x1: (i + 1) * colW,
+      t0: first + i * per, t1: first + (i + 1) * per,
+      packets: 0, bytes: 0,
+    };
   }
-  el("tlmeta").textContent =
-    `${duration(span)} · peak ${bytes(max)} per ${per < 1.5 ? "second" : duration(per) + " bucket"}`;
+  for (const row of data) {
+    const i = Math.min(cols - 1, Math.max(0, Math.floor((row[0] - first) / per)));
+    tlCols[i].packets += row[1];
+    tlCols[i].bytes += row[2];
+  }
+  tlSpan = { first, last, span, width: w, per };
+
+  const metric = ui.metric;
+  let max = 1;
+  for (const c of tlCols) if (c[metric] > max) max = c[metric];
+
+  const plotH = hgt - 16;
+  for (let g = 1; g <= 2; g++) {
+    const y = Math.round(hgt - (plotH * g) / 3) - 0.5;
+    ctx2d.strokeStyle = gridCol;
+    ctx2d.beginPath(); ctx2d.moveTo(0, y); ctx2d.lineTo(w, y); ctx2d.stroke();
+  }
+
+  if (tlHover >= 0 && tlHover < cols) {
+    ctx2d.fillStyle = hoverCol;
+    ctx2d.fillRect(tlCols[tlHover].x0, 0, Math.max(2, colW), hgt - 1);
+  }
+
+  ctx2d.fillStyle = accent;
+  for (const c of tlCols) {
+    const bh = (c[metric] / max) * plotH;
+    if (bh <= 0) continue;
+    ctx2d.fillRect(c.x0, hgt - bh, Math.max(1, colW - 0.6), bh);
+  }
+
+  ctx2d.strokeStyle = lineCol;
+  ctx2d.beginPath(); ctx2d.moveTo(0, hgt - 0.5); ctx2d.lineTo(w, hgt - 0.5); ctx2d.stroke();
+
+  /* Shade everything outside the active window (or the live drag). */
+  const win = timelineWindow();
+  let selX0 = null, selX1 = null;
+  if (tlDrag) {
+    selX0 = Math.min(tlDrag.fromX, tlDrag.toX);
+    selX1 = Math.max(tlDrag.fromX, tlDrag.toX);
+  } else if (win) {
+    selX0 = ((win.from - first) / span) * w;
+    selX1 = ((win.to - first) / span) * w;
+  }
+  if (selX0 !== null && selX1 - selX0 >= 1) {
+    ctx2d.fillStyle = shade;
+    ctx2d.fillRect(0, 0, Math.max(0, selX0), hgt - 1);
+    ctx2d.fillRect(Math.min(w, selX1), 0, Math.max(0, w - selX1), hgt - 1);
+    ctx2d.strokeStyle = accent;
+    ctx2d.beginPath();
+    ctx2d.moveTo(selX0 + 0.5, 0); ctx2d.lineTo(selX0 + 0.5, hgt - 1);
+    ctx2d.moveTo(selX1 - 0.5, 0); ctx2d.lineTo(selX1 - 0.5, hgt - 1);
+    ctx2d.stroke();
+  }
+
+  const unit = per < 1.5 ? "second" : `${duration(per)} bucket`;
+  const peak = metric === "bytes" ? bytes(max) : `${num(max)} packets`;
+  setText(el("tlmeta"), `${duration(span)} · peak ${peak} per ${unit} · ${num(data.length)} active seconds`);
+  renderTimelineFoot();
 }
 
-function renderFindings(r) {
-  const host = el("findings");
-  host.textContent = "";
-  el("findcount").textContent = r.findings.length ? `${r.findings.length} total` : "";
-  if (!r.findings.length) {
-    const d = document.createElement("div");
-    d.className = "empty";
-    d.textContent = "No heuristics fired on this capture.";
-    host.appendChild(d);
+function scheduleTimeline() {
+  if (tlRaf) return;
+  tlRaf = requestAnimationFrame(() => { tlRaf = 0; drawTimeline(); });
+}
+
+function renderTimelineFoot() {
+  const foot = el("tlfoot");
+  clear(foot);
+  if (!tlSpan) {
+    foot.append(h("span", { cls: "caveat", text: "The API exposes per-second traffic buckets only." }));
     return;
   }
-  for (const f of r.findings) {
-    const wrap = document.createElement("div");
-    wrap.className = "finding";
-    const top = document.createElement("div");
-    top.className = "top";
-    const sev = document.createElement("span");
-    sev.className = `sev ${f.severity}`;
-    sev.textContent = f.severity;
-    const title = document.createElement("span");
-    title.className = "title";
-    title.textContent = f.title;
-    const id = document.createElement("span");
-    id.className = "id";
-    id.textContent = f.id;
-    top.append(sev, title, id);
-    const detail = document.createElement("div");
-    detail.className = "detail";
-    detail.textContent = f.detail;
-    wrap.append(top, detail);
-    if (f.evidence && f.evidence.length) {
-      const ul = document.createElement("ul");
-      for (const e of f.evidence) {
-        const li = document.createElement("li");
-        li.textContent = e;
-        ul.appendChild(li);
-      }
-      wrap.appendChild(ul);
+  foot.append(h("span", { cls: "axis", text: `${clockUtc(tlSpan.first)} UTC` }));
+  foot.append(h("span", { cls: "caveat", text: "drag to select a window" }));
+  foot.append(h("span", { cls: "axis spacer", text: `${clockUtc(tlSpan.last)} UTC` }));
+
+  const win = timelineWindow();
+  if (!win) return;
+
+  let pk = 0, by = 0;
+  for (const row of (latest.report.timeline || [])) {
+    if (row[0] >= Math.floor(win.from) && row[0] <= Math.ceil(win.to)) { pk += row[1]; by += row[2]; }
+  }
+  foot.append(h("span", {
+    cls: "axis",
+    text: `▸ window ${clockUtc(win.from)}–${clockUtc(win.to)} UTC · ${duration(Math.max(1, win.to - win.from))} · ` +
+          `${num(pk)} packets · ${bytes(by)}`,
+  }));
+  foot.append(h("button", {
+    cls: "btn tiny", type: "button", text: "clear window",
+    on: { click: () => removeFilter(ui.filters.find((f) => f.kind === "window")) },
+  }));
+  foot.append(h("span", {
+    cls: "caveat",
+    text: "flows are matched by first_seen/last_seen overlap — the API has no per-packet timestamps, " +
+          "so a long flow that merely spans the window is included",
+  }));
+}
+
+function tlIndexAt(x) {
+  if (!tlCols.length) return -1;
+  for (let i = 0; i < tlCols.length; i++) if (x >= tlCols[i].x0 && x < tlCols[i].x1) return i;
+  return x < 0 ? -1 : tlCols.length - 1;
+}
+
+function showTip(clientX, i) {
+  const tip = el("tltip");
+  const c = tlCols[i];
+  if (!c) { tip.hidden = true; return; }
+  clear(tip);
+  const label = tlSpan.per < 1.5
+    ? `${clockUtc(c.t0)} UTC`
+    : `${clockUtc(c.t0)}–${clockUtc(c.t1)} UTC`;
+  tip.append(h("div", { text: label }));
+  const rows = [["packets", num(c.packets)], ["bytes", bytes(c.bytes)]];
+  for (const [k, v] of rows) {
+    tip.append(h("div", { cls: "r" }, h("span", { text: k }), h("span", { text: v })));
+  }
+  tip.hidden = false;
+  const wrapW = el("timeline").clientWidth;
+  const tw = tip.offsetWidth;
+  const left = Math.min(Math.max(0, clientX - tw / 2), Math.max(0, wrapW - tw));
+  tip.style.left = `${left}px`;
+  tip.style.top = "6px";
+}
+
+function wireTimeline() {
+  const canvas = el("timeline");
+  const tip = el("tltip");
+
+  canvas.addEventListener("pointermove", (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    if (tlDrag) {
+      tlDrag.toX = Math.max(0, Math.min(rect.width, x));
+      scheduleTimeline();
     }
-    host.appendChild(wrap);
+    const i = tlIndexAt(x);
+    if (i !== tlHover) { tlHover = i; scheduleTimeline(); }
+    if (i >= 0) showTip(x, i); else tip.hidden = true;
+  });
+
+  canvas.addEventListener("pointerleave", () => {
+    tlHover = -1;
+    tip.hidden = true;
+    scheduleTimeline();
+  });
+
+  canvas.addEventListener("pointerdown", (e) => {
+    if (!tlSpan) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+    tlDrag = { fromX: x, toX: x };
+    dragging = true;
+    canvas.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+
+  const finish = (e) => {
+    if (!tlDrag) return;
+    const drag = tlDrag;
+    tlDrag = null;
+    dragging = false;
+    try { el("timeline").releasePointerCapture(e.pointerId); } catch (_) { /* already released */ }
+    const x0 = Math.min(drag.fromX, drag.toX);
+    const x1 = Math.max(drag.fromX, drag.toX);
+    if (x1 - x0 < 4 || !tlSpan) {
+      /* treat as a click: drop any window */
+      const existing = ui.filters.find((f) => f.kind === "window");
+      if (existing) removeFilter(existing); else scheduleTimeline();
+      applyPending();
+      return;
+    }
+    const from = tlSpan.first + (x0 / tlSpan.width) * tlSpan.span;
+    const to = tlSpan.first + (x1 / tlSpan.width) * tlSpan.span;
+    addFilter("window", `${Math.round(from)}-${Math.round(to)}`, { meta: { from, to } });
+    applyPending();
+  };
+  canvas.addEventListener("pointerup", finish);
+  canvas.addEventListener("pointercancel", finish);
+}
+/* =====================================================================
+   Findings
+
+   Findings are leads, never verdicts. `detail` carries the benign
+   explanation for the same pattern and is always on screen — collapsing a
+   finding hides only its evidence list.
+   ===================================================================== */
+
+const SEV_RANK = { high: 0, medium: 1, low: 2, info: 3 };
+const findingEls = new Map();
+
+const IPV4_RE = /\b\d{1,3}(?:\.\d{1,3}){3}\b/g;
+const HOSTNAME_RE = /\b(?:[a-z0-9_-]+\.)+[a-z]{2,}\b/gi;
+const FLOWKEY_RE = /\S+:\d+ <-> \S+:\d+(?: [A-Z0-9]+)?/g;
+
+/* Pivot buttons are offered only for tokens that actually exist elsewhere in
+   the report, so a pivot never lands on an empty panel by construction. */
+function evidencePivots(text) {
+  const out = [];
+  const used = new Set();
+  const add = (label, title, run) => {
+    if (used.has(label) || out.length >= 4) return;
+    used.add(label);
+    out.push(h("button", { cls: "pivot", type: "button", text: label, title, on: { click: run } }));
+  };
+
+  for (const m of String(text).match(FLOWKEY_RE) || []) {
+    const key = m.trim();
+    if (!reportIndex.flows.has(key)) continue;
+    add("→ flow", `Open ${key}`, () => { selectFlow(key, true); });
+  }
+  for (const m of String(text).match(IPV4_RE) || []) {
+    if (!reportIndex.hosts.has(m)) continue;
+    add(`→ ${m}`, `Filter everything to host ${m}`, () => addFilter("host", m));
+  }
+  for (const m of String(text).match(HOSTNAME_RE) || []) {
+    const name = m.toLowerCase();
+    if (!reportIndex.names.has(name)) continue;
+    add(`→ ${m}`, `Filter to name ${m}`, () => addFilter("name", m));
+  }
+  return out;
+}
+
+function findingMatches(f, ctx) {
+  if (ctx.sevs.size && !ctx.sevs.has(f.severity)) return false;
+  const terms = [];
+  if (ctx.q) terms.push(ctx.q);
+  for (const v of ctx.hosts) terms.push(v.toLowerCase());
+  for (const v of ctx.names) terms.push(v);
+  for (const v of ctx.services) terms.push(v.toLowerCase());
+  for (const v of ctx.ja3s) terms.push(v.toLowerCase());
+  if (!terms.length) return true;
+  const hay = `${f.id} ${f.title} ${f.detail} ${(f.evidence || []).join(" ")}`.toLowerCase();
+  return terms.every((t) => hay.includes(t));
+}
+
+/* High severity is expanded unless the user explicitly collapsed it; every
+   other severity starts collapsed unless they opened it. */
+function isCollapsed(f) {
+  return Object.prototype.hasOwnProperty.call(ui.collapsed, f.id)
+    ? ui.collapsed[f.id]
+    : f.severity !== "high";
+}
+
+function buildFinding(f) {
+  const rec = { current: f, evKeys: "" };
+  rec.sev = h("button", {
+    cls: `sev ${f.severity}`, type: "button", text: f.severity,
+    title: `Filter findings to ${f.severity} severity`,
+    on: { click: () => addFilter("sev", rec.current.severity) },
+  });
+  rec.title = h("span", { cls: "title" });
+  rec.fid = h("span", { cls: "fid" });
+  rec.toggle = h("button", {
+    cls: "btn tiny evtoggle", type: "button",
+    on: { click: () => {
+      /* invert the state actually on screen, which may be the default */
+      ui.collapsed[rec.current.id] = !isCollapsed(rec.current);
+      saveState();
+      rerender();
+    } },
+  });
+  rec.detail = h("div", { cls: "detail" });
+  rec.evlist = h("ul", { cls: "evlist" });
+  rec.root = h("div", { cls: "finding" },
+    h("div", { cls: "top" }, rec.sev, rec.title, rec.fid, rec.toggle), rec.detail, rec.evlist);
+  return rec;
+}
+
+function renderFindings(report, ctx) {
+  const host = el("findings");
+  const all = report.findings.slice().sort((a, b) =>
+    (SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9));
+  const list = all.filter((f) => findingMatches(f, ctx));
+
+  panelMeta("findmeta", list.length, all.length, ctx, ["q", "host", "name", "service", "ja3", "sev"]);
+
+  let emptyEl = host.querySelector(".empty");
+  if (!list.length) {
+    if (!emptyEl) { emptyEl = emptyBlock(""); host.append(emptyEl); }
+    setText(emptyEl, all.length
+      ? "No finding matches the active filters."
+      : "No heuristics fired on this capture. That is not a clean bill of health — it means none of the implemented detectors matched.");
+    emptyEl.hidden = false;
+  } else if (emptyEl) {
+    emptyEl.hidden = true;
+  }
+
+  const seen = new Set();
+  list.forEach((f, i) => {
+    seen.add(f.id);
+    let rec = findingEls.get(f.id);
+    if (!rec) { rec = buildFinding(f); findingEls.set(f.id, rec); }
+    rec.current = f;
+    const collapsed = isCollapsed(f);
+
+    rec.root.className = `finding ${f.severity}`;
+    setText(rec.sev, f.severity);
+    rec.sev.className = `sev ${f.severity}`;
+    setText(rec.title, f.title);
+    setText(rec.fid, f.id);
+    setText(rec.detail, f.detail);
+
+    const ev = f.evidence || [];
+    setText(rec.toggle, ev.length ? `${ev.length} evidence ${collapsed ? "▸" : "▾"}` : "no evidence");
+    rec.toggle.disabled = ev.length === 0;
+    rec.toggle.setAttribute("aria-expanded", String(!collapsed && ev.length > 0));
+
+    const sig = ev.join(" ");
+    if (sig !== rec.evKeys) {
+      rec.evKeys = sig;
+      clear(rec.evlist);
+      for (const line of ev) {
+        const row = h("li", { cls: "evrow" }, h("span", { cls: "ev", text: line }));
+        const pivots = evidencePivots(line);
+        if (pivots.length) {
+          const wrap = h("span", { cls: "pivots" });
+          for (const p of pivots) wrap.append(p);
+          row.append(wrap);
+        }
+        row.append(copyBtn(line, "evidence"));
+        rec.evlist.append(row);
+      }
+    }
+    rec.evlist.hidden = collapsed || ev.length === 0;
+
+    const at = host.children[i];
+    if (at !== rec.root) host.insertBefore(rec.root, at || null);
+  });
+  for (const [id, rec] of Array.from(findingEls)) {
+    if (!seen.has(id)) { rec.root.remove(); findingEls.delete(id); }
+  }
+  if (emptyEl) host.append(emptyEl);
+}
+
+/* =====================================================================
+   Flows + detail drawer
+   ===================================================================== */
+
+let flowTable = null;
+
+function initFlowTable() {
+  flowTable = makeTable(el("flows"), {
+    id: "flows",
+    key: (f) => f.flow,
+    emptyText: "No flow matches the active filters.",
+    onRow: (f) => selectFlow(f.flow, false),
+    decorate: (tr, f, key) => {
+      tr.classList.toggle("sel", key === ui.selectedFlow);
+      tr.setAttribute("aria-selected", String(key === ui.selectedFlow));
+    },
+    cols: [
+      { id: "flow", label: "Flow", align: "mono", cls: "wrap",
+        sortValue: (f) => f.flow, text: (f) => f.flow },
+      { id: "scope", label: "Scope", sortValue: (f) => f.scope,
+        build: (td, f) => {
+          let tag = td.firstChild;
+          if (!tag) {
+            tag = h("span", { cls: "tag" });
+            td.append(tag);
+            td.style.cursor = "pointer";
+            td.addEventListener("click", (e) => { e.stopPropagation(); addFilter("scope", td._scope); });
+          }
+          td._scope = f.scope;
+          tag.className = `tag ${f.scope}`;
+          setText(tag, f.scope);
+          td.title = `Filter to ${f.scope} flows`;
+        } },
+      { id: "service", label: "Service", align: "mono", sortValue: (f) => f.service || "",
+        build: (td, f) => filterCell(td, f.service || "—", "service", f.service || "") },
+      { id: "app", label: "App", align: "mono",
+        sortValue: (f) => (f.protocols || []).join(","),
+        build: (td, f) => {
+          const want = (f.protocols || []).join(",") + (f.reset ? " RST" : "");
+          if (td._sig === want) return;
+          td._sig = want;
+          clear(td);
+          const wrap = h("span", { cls: "protos" });
+          for (const p of f.protocols || []) wrap.append(h("span", { cls: "tag", text: p }));
+          if (f.reset) wrap.append(h("span", { cls: "tag rst", text: "rst", title: "Connection was reset" }));
+          if (!(f.protocols || []).length && !f.reset) wrap.append(h("span", { text: "—" }));
+          td.append(wrap);
+        } },
+      { id: "sni", label: "SNI / host", align: "mono", cls: "wrap",
+        sortValue: (f) => f.sni || "",
+        build: (td, f) => filterCell(td, f.sni || "—", "name", f.sni || "") },
+      { id: "packets", label: "Packets", align: "num",
+        sortValue: (f) => f.packets, text: (f) => num(f.packets) },
+      { id: "bytes", label: "Bytes", align: "num",
+        sortValue: (f) => f.bytes, text: (f) => bytes(f.bytes) },
+      { id: "split", label: "Up / down",
+        sortValue: (f) => (f.bytes_down > 0 ? f.bytes_up / f.bytes_down : Infinity),
+        build: (td, f) => splitCell(td, f.bytes_up, f.bytes_down) },
+      { id: "duration", label: "Duration", align: "num",
+        sortValue: (f) => f.duration_secs, text: (f) => duration(f.duration_secs) },
+      { id: "start", label: "First seen", align: "num",
+        sortValue: (f) => epoch(f.first_seen),
+        text: (f) => (f.first_seen ? `${f.first_seen.slice(11, 19)}Z` : ""),
+        title: (f) => stampUtc(f.first_seen) },
+    ],
+  });
+}
+
+function renderFlows(report, ctx) {
+  const all = report.top_flows;
+  const list = all.filter((f) => flowMatches(f, ctx));
+  const shown = flowTable.update(list);
+  flowOrder = shown.map((f) => f.flow);
+  panelMeta("flowmeta", list.length, all.length, ctx,
+    ["q", "host", "service", "scope", "name", "ja3", "window"]);
+}
+
+function selectFlow(key, scrollTo) {
+  ui.selectedFlow = key;
+  saveState();
+  renderDrawer();
+  if (latest) renderFlows(latest.report, buildCtx(latest.report));
+  if (scrollTo) {
+    const section = el("flowsection");
+    if (section) section.scrollIntoView({ behavior: "smooth", block: "start" });
+    const row = flowTable.rowEl(key);
+    if (row) row.scrollIntoView({ block: "nearest" });
   }
 }
 
-function renderTalkers(r) {
-  const max = r.talkers.length ? r.talkers[0].total_bytes : 0;
-  replace("talkers", table(
-    ["Host", "", "Total", "Sent", "Received", "Peers"],
-    r.talkers.map(t => [
-      t.address + (t.private ? "" : " ↗"),
-      meter(t.total_bytes, max),
-      bytes(t.total_bytes), bytes(t.bytes_sent), bytes(t.bytes_received), t.peers,
-    ]),
-    ["mono", null, "num", "num", "num", "num"]
-  ));
+function closeDrawer() {
+  ui.selectedFlow = null;
+  saveState();
+  renderDrawer();
+  if (latest) renderFlows(latest.report, buildCtx(latest.report));
 }
 
-function renderServices(r) {
-  replace("services", table(
-    ["Service", "Proto", "Port", "Flows", "Packets", "Bytes"],
-    r.services.map(s => [s.service, s.protocol, s.port, s.flows, s.packets, bytes(s.bytes)]),
-    ["mono", "mono", "num", "num", "num", "num"]
-  ));
+function kv(key, value, opts) {
+  const v = h("span", { cls: "v", text: value === null || value === undefined || value === "" ? "—" : value });
+  const row = h("div", { cls: "kv" }, h("span", { cls: "k", text: key }), v);
+  if (opts && opts.copy && value) v.append(copyBtn(value, key.toLowerCase()));
+  if (opts && opts.filter && value) {
+    v.append(h("button", {
+      cls: "copy", type: "button", text: "filter", title: `Filter to ${opts.filter.kind} ${value}`,
+      on: { click: () => addFilter(opts.filter.kind, opts.filter.value) },
+    }));
+  }
+  return row;
 }
 
-function renderFlows(r) {
-  const n = flowFilter.toLowerCase();
-  const rows = r.top_flows.filter(f => !n ||
-    f.flow.toLowerCase().includes(n) ||
-    (f.sni || "").toLowerCase().includes(n) ||
-    (f.service || "").includes(n) ||
-    f.protocols.some(p => p.includes(n)));
-  replace("flows", table(
-    ["Flow", "Scope", "App", "SNI / host", "Packets", "Bytes", "Duration"],
-    rows.map(f => [
-      f.flow, f.scope, f.protocols.join(",") || (f.service || ""),
-      f.sni || "", f.packets, bytes(f.bytes), duration(f.duration_secs),
-    ]),
-    ["mono", null, "mono", "mono", "num", "num", "num"]
-  ));
+function renderDrawer() {
+  const drawer = el("drawer");
+  const backdrop = el("backdrop");
+  const body = el("drawerbody");
+  const key = ui.selectedFlow;
+  if (!key) {
+    drawer.hidden = true;
+    backdrop.hidden = true;
+    clear(body);
+    return;
+  }
+  drawer.hidden = false;
+  backdrop.hidden = false;
+
+  const keep = body.scrollTop;
+  clear(body);
+
+  const f = flowIndex.get(key);
+  if (!f) {
+    body.append(h("div", { cls: "kv" }, h("span", { cls: "k", text: "flow" }), h("span", { cls: "v", text: key })));
+    body.append(emptyBlock(
+      "This flow is no longer in the report's top-flows list. It may have aged out of the top-N ranking, " +
+      "or the capture was replaced. Nothing further is known about it from the current snapshot."));
+    body.append(h("div", { cls: "dactions" },
+      h("button", { cls: "btn", type: "button", text: "close", on: { click: closeDrawer } })));
+    return;
+  }
+
+  const flowRow = kv("flow", f.flow, { copy: true });
+  body.append(flowRow);
+  body.append(kv("source", f.source, { copy: true, filter: { kind: "host", value: addrOf(f.source) } }));
+  body.append(kv("destination", f.destination, { copy: true, filter: { kind: "host", value: addrOf(f.destination) } }));
+  body.append(kv("protocol", f.protocol));
+  body.append(kv("service", f.service, f.service ? { filter: { kind: "service", value: f.service } } : null));
+  body.append(kv("scope", f.scope, { filter: { kind: "scope", value: f.scope } }));
+  body.append(kv("app protocols", (f.protocols || []).length ? f.protocols.join(", ") : ""));
+  body.append(kv("reset", f.reset ? "yes — connection was reset" : "no"));
+
+  const vol = h("div", { cls: "dgroup" }, h("div", { cls: "gh", text: "volume" }));
+  vol.append(kv("packets", num(f.packets)));
+  vol.append(kv("total bytes", `${bytes(f.bytes)} (${num(f.bytes)} B)`));
+  vol.append(kv("up", `${bytes(f.bytes_up)} (${num(f.bytes_up)} B)`));
+  vol.append(kv("down", `${bytes(f.bytes_down)} (${num(f.bytes_down)} B)`));
+  const ratio = f.bytes_down > 0 ? `${(f.bytes_up / f.bytes_down).toFixed(1)}× up/down` : "no bytes downstream";
+  vol.append(kv("ratio", ratio));
+  const split = h("div");
+  splitCell(split, f.bytes_up, f.bytes_down);
+  vol.append(split);
+  body.append(vol);
+
+  const time = h("div", { cls: "dgroup" }, h("div", { cls: "gh", text: "timing" }));
+  time.append(kv("duration", duration(f.duration_secs)));
+  time.append(kv("first seen", stampUtc(f.first_seen) ? `${stampUtc(f.first_seen)} UTC` : ""));
+  time.append(kv("last seen", stampUtc(f.last_seen) ? `${stampUtc(f.last_seen)} UTC` : ""));
+  body.append(time);
+
+  const tls = h("div", { cls: "dgroup" }, h("div", { cls: "gh", text: "tls" }));
+  if (f.sni || f.ja3) {
+    tls.append(kv("sni", f.sni, f.sni ? { copy: true, filter: { kind: "name", value: f.sni } } : null));
+    tls.append(kv("ja3", f.ja3, f.ja3 ? { copy: true, filter: { kind: "ja3", value: f.ja3 } } : null));
+  } else {
+    tls.append(emptyBlock("No TLS ClientHello was decoded for this flow."));
+  }
+  body.append(tls);
+
+  /* Cross-references: the same flow seen by other parts of the report. */
+  const beacon = (latest.report.beacons || []).find((b) => b.flow === key);
+  if (beacon) {
+    const bg = h("div", { cls: "dgroup" }, h("div", { cls: "gh", text: "beacon profile" }));
+    bg.append(kv("interval", duration(beacon.interval)));
+    bg.append(kv("jitter", percent(beacon.jitter)));
+    bg.append(kv("samples", num(beacon.samples)));
+    bg.append(kv("confidence", beacon.confidence.toFixed(2)));
+    bg.append(kv("observed over", duration(beacon.total_seconds)));
+    if (beacon.samples_truncated) {
+      bg.append(emptyBlock("Sampling was capped for this flow, so the interval and confidence are computed " +
+        "from a subset of the intervals and should be read as weaker evidence."));
+    }
+    body.append(bg);
+  }
+
+  const related = (latest.report.findings || []).filter((fd) => {
+    const hay = (fd.evidence || []).join(" ");
+    return hay.includes(key) || hay.includes(addrOf(f.source)) || hay.includes(addrOf(f.destination));
+  });
+  if (related.length) {
+    const rg = h("div", { cls: "dgroup" }, h("div", { cls: "gh", text: "related findings" }));
+    for (const fd of related) {
+      rg.append(h("div", { cls: "kv" },
+        h("span", { cls: `k ${fd.severity}`, text: fd.severity }),
+        h("span", { cls: "v" },
+          h("button", {
+            cls: "pivot", type: "button", text: fd.title, title: "Show only this finding's severity",
+            on: { click: () => addFilter("sev", fd.severity) },
+          }))));
+    }
+    body.append(rg);
+  }
+
+  body.append(h("div", { cls: "dactions" },
+    h("button", { cls: "btn", type: "button", text: `filter to ${addrOf(f.source)}`,
+      on: { click: () => addFilter("host", addrOf(f.source)) } }),
+    h("button", { cls: "btn", type: "button", text: `filter to ${addrOf(f.destination)}`,
+      on: { click: () => addFilter("host", addrOf(f.destination)) } }),
+    h("button", { cls: "btn", type: "button", text: "copy flow key",
+      on: { click: () => copyValue(f.flow, "flow key") } })));
+
+  body.scrollTop = keep;
+}
+/* =====================================================================
+   Talkers, services, DNS, TLS, HTTP, beacons
+   ===================================================================== */
+
+let talkerTable = null, serviceTable = null, dnsTable = null,
+    sniTable = null, ja3Table = null, hostTable = null, uaTable = null, beaconTable = null;
+
+/* Panels without a given field are narrowed through the flow join; when the
+   join cannot speak to a criterion at all the panel says so instead. */
+function derivedOk(ctx, handled, set, value, directHit) {
+  const unresolved = ignoredBy(ctx, handled).length > 0;
+  if (!unresolved) return true;
+  return directHit || set.has(value);
 }
 
-function renderDns(r) {
-  const d = r.dns;
+function initTalkers() {
+  talkerTable = makeTable(el("talkers"), {
+    id: "talkers",
+    key: (t) => t.address,
+    emptyText: "No host matches the active filters.",
+    onRow: (t) => addFilter("host", t.address),
+    cols: [
+      { id: "address", label: "Host", align: "mono", sortValue: (t) => t.address,
+        build: (td, t) => {
+          if (!td.firstChild) td.append(h("span"), h("span", { cls: "tag" }), copyBtn(t.address, "address"));
+          setText(td.firstChild, t.address);
+          const tag = td.children[1];
+          setText(tag, t.private ? "" : "public");
+          tag.className = t.private ? "tag" : "tag outbound";
+          tag.hidden = !!t.private;
+          td.title = `Filter everything to ${t.address}`;
+        } },
+      { id: "share", label: "", build: (td, t) => meterCell(td, t.total_bytes, talkerMax) },
+      { id: "total", label: "Total", align: "num", sortValue: (t) => t.total_bytes, text: (t) => bytes(t.total_bytes) },
+      { id: "sent", label: "Sent", align: "num", sortValue: (t) => t.bytes_sent, text: (t) => bytes(t.bytes_sent) },
+      { id: "recv", label: "Received", align: "num", sortValue: (t) => t.bytes_received, text: (t) => bytes(t.bytes_received) },
+      { id: "pkts", label: "Packets", align: "num",
+        sortValue: (t) => t.packets_sent + t.packets_received,
+        text: (t) => num(t.packets_sent + t.packets_received) },
+      { id: "peers", label: "Peers", align: "num", sortValue: (t) => t.peers, text: (t) => num(t.peers) },
+    ],
+  });
+}
+
+let talkerMax = 0;
+
+function renderTalkers(report, ctx) {
+  const handled = ["q", "host"];
+  const all = report.talkers;
+  const list = all.filter((t) => {
+    if (ctx.hosts.size && !ctx.hosts.has(t.address)) return false;
+    const direct = ctx.q ? t.address.toLowerCase().includes(ctx.q) : false;
+    if (ctx.q && !direct && !ctx.derivedHosts.has(t.address)) return false;
+    return derivedOk(ctx, handled, ctx.derivedHosts, t.address, direct);
+  });
+  talkerMax = list.length ? Math.max(...list.map((t) => t.total_bytes)) : 0;
+  talkerTable.update(list);
+  panelMeta("talkermeta", list.length, all.length, ctx, handled);
+}
+
+function initServices() {
+  serviceTable = makeTable(el("services"), {
+    id: "services",
+    key: (s) => `${s.service}|${s.protocol}|${s.port}`,
+    emptyText: "No service matches the active filters.",
+    onRow: (s) => addFilter("service", s.service),
+    cols: [
+      { id: "service", label: "Service", align: "mono", sortValue: (s) => s.service, text: (s) => s.service,
+        title: (s) => `Filter to ${s.service}` },
+      { id: "proto", label: "Proto", align: "mono", sortValue: (s) => s.protocol, text: (s) => s.protocol },
+      { id: "port", label: "Port", align: "num", sortValue: (s) => s.port, text: (s) => String(s.port) },
+      { id: "flows", label: "Flows", align: "num", sortValue: (s) => s.flows, text: (s) => num(s.flows) },
+      { id: "packets", label: "Packets", align: "num", sortValue: (s) => s.packets, text: (s) => num(s.packets) },
+      { id: "bytes", label: "Bytes", align: "num", sortValue: (s) => s.bytes, text: (s) => bytes(s.bytes) },
+    ],
+  });
+}
+
+function renderServices(report, ctx) {
+  const handled = ["q", "service"];
+  const all = report.services;
+  const list = all.filter((s) => {
+    if (ctx.services.size && !ctx.services.has(s.service)) return false;
+    const direct = ctx.q
+      ? `${s.service} ${s.protocol} ${s.port}`.toLowerCase().includes(ctx.q)
+      : false;
+    if (ctx.q && !direct && !ctx.derivedServices.has(s.service)) return false;
+    return derivedOk(ctx, handled, ctx.derivedServices, s.service, direct);
+  });
+  serviceTable.update(list);
+  panelMeta("servicemeta", list.length, all.length, ctx, handled);
+}
+
+/* --- DNS ---------------------------------------------------------------- */
+
+function initDns() {
   const host = el("dns");
-  host.textContent = "";
-  const meta = document.createElement("div");
-  meta.className = "empty";
-  meta.textContent =
-    `${d.unique_names} unique names · ${d.queries} queries · ${d.nxdomain} NXDOMAIN`;
-  host.appendChild(meta);
-  host.appendChild(table(
-    ["Name", "Lookups"],
-    d.top_names.map(([name, count]) => [name, count]),
-    ["mono", "num"]
-  ));
+  host.append(h("div", { cls: "note", attrs: { id: "dnsnote" } }));
+  dnsTable = makeTable(host, {
+    id: "dns",
+    key: (row) => row[0],
+    emptyText: "No DNS query names in this capture.",
+    onRow: (row) => addFilter("name", row[0]),
+    cols: [
+      { id: "name", label: "Query name", align: "mono", cls: "wrap",
+        sortValue: (row) => row[0],
+        build: (td, row) => {
+          if (!td.firstChild) td.append(h("span"), copyBtn(row[0], "name"));
+          setText(td.firstChild, row[0]);
+          td.title = `Filter to ${row[0]}`;
+        } },
+      { id: "parent", label: "Parent", align: "mono",
+        sortValue: (row) => parentDomain(row[0]), text: (row) => parentDomain(row[0]) },
+      { id: "count", label: "Lookups", align: "num", sortValue: (row) => row[1], text: (row) => num(row[1]) },
+    ],
+  });
 }
 
-function renderTls(r) {
-  const t = r.tls;
-  const host = el("tls");
-  host.textContent = "";
-  const meta = document.createElement("div");
-  meta.className = "empty";
-  meta.textContent = `${t.handshakes} handshakes · ${t.unique_sni} unique SNI · ` +
-    `${t.no_sni} without SNI · ${t.obsolete_versions} obsolete`;
-  host.appendChild(meta);
-  host.appendChild(table(
-    ["SNI", "Count"],
-    t.top_sni.map(([n, c]) => [n, c]),
-    ["mono", "num"]
-  ));
-  if (t.top_ja3.length) {
-    const h = document.createElement("div");
-    h.className = "empty";
-    h.textContent = "JA3 client fingerprints";
-    host.appendChild(h);
-    host.appendChild(table(
-      ["JA3", "Count", "Example SNI"],
-      t.top_ja3.map(([hash, count, sni]) => [hash, count, sni || ""]),
-      ["mono", "num", "mono"]
-    ));
+function parentDomain(name) {
+  const parts = String(name).split(".").filter(Boolean);
+  return parts.length <= 2 ? String(name) : parts.slice(-2).join(".");
+}
+
+function renderDns(report, ctx) {
+  const d = report.dns;
+  const handled = ["q", "name"];
+  const all = d.top_names || [];
+  const list = all.filter((row) => {
+    const name = String(row[0]).toLowerCase();
+    if (ctx.names.size) {
+      let hit = false;
+      for (const v of ctx.names) if (name === v || name.endsWith(`.${v}`)) { hit = true; break; }
+      if (!hit) return false;
+    }
+    if (ctx.q && !name.includes(ctx.q)) return false;
+    return true;
+  });
+
+  const note = el("dnsnote");
+  const parts = [`${num(d.unique_names)} unique names · ${num(d.queries)} queries · ${num(d.nxdomain)} NXDOMAIN`];
+  if ((d.servers || []).length) {
+    parts.push(`servers: ${d.servers.map((s) => `${s[0]} (${s[1]})`).join(", ")}`);
   }
+  if ((d.top_parents || []).length) {
+    parts.push(`busiest parents: ${d.top_parents.slice(0, 4).map((p) => `${p[0]} (${p[1]})`).join(", ")}`);
+  }
+  setText(note, parts.join("  ·  "));
+
+  dnsTable.update(list);
+  panelMeta("dnsmeta", list.length, all.length, ctx, handled);
 }
 
-function renderBeacons(r) {
-  el("beaconsection").style.display = r.beacons.length ? "" : "none";
-  replace("beacons", table(
-    ["Flow", "Interval", "Jitter", "Samples", "Confidence", "SNI"],
-    r.beacons.map(b => [
-      b.flow, duration(b.interval), percent(b.jitter),
-      b.samples, b.confidence.toFixed(2), b.sni || "",
-    ]),
-    ["mono", "num", "num", "num", "num", "mono"]
-  ));
+/* --- TLS ---------------------------------------------------------------- */
+
+function initTls() {
+  const host = el("tls");
+  host.append(h("div", { cls: "note", attrs: { id: "tlsnote" } }));
+  sniTable = makeTable(host, {
+    id: "sni",
+    key: (row) => row[0],
+    emptyText: "No TLS handshakes with an SNI extension in this capture.",
+    onRow: (row) => addFilter("name", row[0]),
+    cols: [
+      { id: "sni", label: "SNI", align: "mono", cls: "wrap", sortValue: (row) => row[0],
+        build: (td, row) => {
+          if (!td.firstChild) td.append(h("span"), copyBtn(row[0], "sni"));
+          setText(td.firstChild, row[0]);
+          td.title = `Filter to ${row[0]}`;
+        } },
+      { id: "count", label: "Handshakes", align: "num", sortValue: (row) => row[1], text: (row) => num(row[1]) },
+    ],
+  });
+  host.append(h("div", { cls: "note", text: "JA3 client fingerprints" }));
+  ja3Table = makeTable(host, {
+    id: "ja3",
+    key: (row) => row[0],
+    emptyText: "No JA3 fingerprints were computed for this capture.",
+    onRow: (row) => addFilter("ja3", row[0]),
+    cols: [
+      { id: "ja3", label: "JA3", align: "mono", cls: "wrap", sortValue: (row) => row[0],
+        build: (td, row) => {
+          if (!td.firstChild) td.append(h("span"), copyBtn(row[0], "ja3"));
+          setText(td.firstChild, row[0]);
+          td.title = `Filter to JA3 ${row[0]}`;
+        } },
+      { id: "count", label: "Count", align: "num", sortValue: (row) => row[1], text: (row) => num(row[1]) },
+      { id: "sni", label: "Example SNI", align: "mono", cls: "wrap",
+        sortValue: (row) => row[2] || "", text: (row) => row[2] || "—" },
+    ],
+  });
 }
 
-function render(payload) {
-  const r = payload.report;
+function renderTls(report, ctx) {
+  const t = report.tls;
+  const handled = ["q", "name", "ja3", "host", "service", "scope", "window"];
+  const note = el("tlsnote");
+  setText(note, `${num(t.handshakes)} handshakes · ${num(t.unique_sni)} unique SNI · ` +
+    `${num(t.no_sni)} without SNI · ${num(t.obsolete_versions)} using an obsolete version`);
+
+  const allSni = t.top_sni || [];
+  const sni = allSni.filter((row) => {
+    const name = String(row[0]).toLowerCase();
+    if (ctx.names.size && !ctx.names.has(name)) return false;
+    if (ctx.q && !name.includes(ctx.q)) return false;
+    /* host/scope/service/window reach SNI only through the flow join */
+    const viaFlows = ["host", "scope", "service", "window", "ja3"].some((k) => ctx.kinds.has(k));
+    if (viaFlows && !ctx.derivedNames.has(name)) return false;
+    return true;
+  });
+  sniTable.update(sni);
+
+  const allJa3 = t.top_ja3 || [];
+  const ja3 = allJa3.filter((row) => {
+    if (ctx.ja3s.size && !ctx.ja3s.has(row[0])) return false;
+    if (ctx.q && !`${row[0]} ${row[2] || ""}`.toLowerCase().includes(ctx.q)) return false;
+    if (ctx.names.size && !ctx.names.has(String(row[2] || "").toLowerCase())) return false;
+    return true;
+  });
+  ja3Table.update(ja3);
+  panelMeta("tlsmeta", sni.length + ja3.length, allSni.length + allJa3.length, ctx, handled);
+}
+
+/* --- HTTP --------------------------------------------------------------- */
+
+function initHttp() {
+  const host = el("http");
+  host.append(h("div", { cls: "note", attrs: { id: "httpnote" } }));
+  hostTable = makeTable(host, {
+    id: "httphosts",
+    key: (row) => row[0],
+    emptyText: "No cleartext HTTP requests were decoded in this capture.",
+    onRow: (row) => addFilter("name", row[0]),
+    cols: [
+      { id: "host", label: "Host header", align: "mono", cls: "wrap",
+        sortValue: (row) => row[0],
+        build: (td, row) => {
+          if (!td.firstChild) td.append(h("span"), copyBtn(row[0], "host"));
+          setText(td.firstChild, row[0]);
+          td.title = `Filter to ${row[0]}`;
+        } },
+      { id: "count", label: "Requests", align: "num", sortValue: (row) => row[1], text: (row) => num(row[1]) },
+    ],
+  });
+  host.append(h("div", { cls: "note", text: "User agents" }));
+  uaTable = makeTable(host, {
+    id: "httpua",
+    key: (row) => row[0],
+    emptyText: "No User-Agent headers were observed.",
+    cols: [
+      { id: "ua", label: "User-Agent", align: "mono", cls: "wrap", sortValue: (row) => row[0],
+        build: (td, row) => {
+          if (!td.firstChild) td.append(h("span"), copyBtn(row[0], "user agent"));
+          setText(td.firstChild, row[0]);
+        } },
+      { id: "count", label: "Seen", align: "num", sortValue: (row) => row[1], text: (row) => num(row[1]) },
+    ],
+  });
+}
+
+function renderHttp(report, ctx) {
+  const hp = report.http;
+  const handled = ["q", "name"];
+  const bits = [`${num(hp.requests)} requests · ${num(hp.responses)} responses`];
+  if (hp.cleartext_auth > 0) {
+    bits.push(`${num(hp.cleartext_auth)} request(s) carried credentials in cleartext`);
+  }
+  setText(el("httpnote"), bits.join("  ·  "));
+
+  const allHosts = hp.top_hosts || [];
+  const hosts = allHosts.filter((row) => {
+    const name = String(row[0]).toLowerCase();
+    if (ctx.names.size && !ctx.names.has(name)) return false;
+    if (ctx.q && !name.includes(ctx.q)) return false;
+    return true;
+  });
+  hostTable.update(hosts);
+
+  const allUas = hp.top_user_agents || [];
+  const uas = allUas.filter((row) => !ctx.q || String(row[0]).toLowerCase().includes(ctx.q));
+  uaTable.update(uas);
+  panelMeta("httpmeta", hosts.length + uas.length, allHosts.length + allUas.length, ctx, handled);
+}
+
+/* --- Beacons ------------------------------------------------------------ */
+
+function initBeacons() {
+  beaconTable = makeTable(el("beacons"), {
+    id: "beacons",
+    key: (b) => b.flow,
+    emptyText: "No flow in this capture showed a regular enough interval to be scored as a beacon candidate.",
+    onRow: (b) => selectFlow(b.flow, true),
+    decorate: (tr, b) => tr.classList.toggle("sel", b.flow === ui.selectedFlow),
+    cols: [
+      { id: "flow", label: "Flow", align: "mono", cls: "wrap", sortValue: (b) => b.flow, text: (b) => b.flow },
+      { id: "sni", label: "SNI", align: "mono", sortValue: (b) => b.sni || "", text: (b) => b.sni || "—" },
+      { id: "interval", label: "Interval", align: "num",
+        sortValue: (b) => b.interval, text: (b) => duration(b.interval) },
+      { id: "jitter", label: "Jitter", align: "num",
+        sortValue: (b) => b.jitter, text: (b) => percent(b.jitter),
+        title: () => "Spread of the observed intervals; lower means more machine-like" },
+      { id: "samples", label: "Samples", align: "num",
+        sortValue: (b) => b.samples,
+        build: (td, b) => {
+          if (!td.firstChild) td.append(h("span"), h("span", { cls: "tag" }));
+          setText(td.firstChild, num(b.samples));
+          const tag = td.children[1];
+          tag.hidden = !b.samples_truncated;
+          tag.className = "tag rst";
+          setText(tag, b.samples_truncated ? " capped" : "");
+          td.title = b.samples_truncated
+            ? "Sampling was capped: the interval and confidence come from a subset of intervals and are weaker evidence."
+            : "";
+        } },
+      { id: "confidence", label: "Confidence", align: "num",
+        sortValue: (b) => b.confidence, text: (b) => b.confidence.toFixed(2) },
+      { id: "observed", label: "Observed over", align: "num",
+        sortValue: (b) => b.total_seconds, text: (b) => duration(b.total_seconds) },
+    ],
+  });
+}
+
+function renderBeacons(report, ctx) {
+  const handled = ["q", "host", "name"];
+  const all = report.beacons || [];
+  const list = all.filter((b) => {
+    if (ctx.hosts.size) {
+      const ends = flowEndpoints(b.flow).map(addrOf);
+      let hit = false;
+      for (const v of ctx.hosts) if (ends.includes(v)) { hit = true; break; }
+      if (!hit) return false;
+    }
+    if (ctx.names.size && !ctx.names.has(String(b.sni || "").toLowerCase())) return false;
+    if (ctx.q && !`${b.flow} ${b.sni || ""} ${b.destination}`.toLowerCase().includes(ctx.q)) return false;
+    return true;
+  });
+  beaconTable.update(list);
+  panelMeta("beaconmeta", list.length, all.length, ctx, handled);
+}
+/* =====================================================================
+   Render orchestration
+   ===================================================================== */
+
+function indexReport(report) {
+  flowIndex = new Map();
+  const hosts = new Set(), names = new Set(), flows = new Set();
+  for (const f of report.top_flows) {
+    flowIndex.set(f.flow, f);
+    flows.add(f.flow);
+    hosts.add(addrOf(f.source));
+    hosts.add(addrOf(f.destination));
+    if (f.sni) names.add(f.sni.toLowerCase());
+  }
+  for (const t of report.talkers) hosts.add(t.address);
+  for (const s of report.dns.servers || []) hosts.add(s[0]);
+  for (const n of report.dns.top_names || []) names.add(String(n[0]).toLowerCase());
+  for (const n of report.dns.top_parents || []) names.add(String(n[0]).toLowerCase());
+  for (const n of report.tls.top_sni || []) names.add(String(n[0]).toLowerCase());
+  for (const n of report.http.top_hosts || []) names.add(String(n[0]).toLowerCase());
+  for (const b of report.beacons || []) {
+    flows.add(b.flow);
+    for (const e of flowEndpoints(b.flow)) hosts.add(addrOf(e));
+  }
+  reportIndex = { hosts, names, flows };
+}
+
+/* The single render entry point. Everything on screen is a function of
+   (latest report, ui) — which is what lets a poll and a click share a path. */
+function rerender() {
+  if (!latest) return;
+  const report = latest.report;
+  indexReport(report);
+  const ctx = buildCtx(report);
+
+  renderBanner(report, latest.status);
+  renderStats(report, latest.status);
+  renderFilterBar(ctx, report);
+  drawTimeline();
+  renderFindings(report, ctx);
+  renderFlows(report, ctx);
+  renderTalkers(report, ctx);
+  renderServices(report, ctx);
+  renderDns(report, ctx);
+  renderTls(report, ctx);
+  renderHttp(report, ctx);
+  renderBeacons(report, ctx);
+  renderDrawer();
+
+  setText(el("footer"), `${report.tool} · report generated ${report.generated_at} · source ${report.source}`);
+}
+
+/* =====================================================================
+   Polling
+
+   Two independent protections against the poll disturbing the user:
+   the reconciler (nothing is rebuilt that can be patched), and this
+   deferral gate (nothing is patched at all while the user is mid-action).
+   ===================================================================== */
+
+function interacting() {
+  if (paused || dragging) return true;
+  const active = document.activeElement;
+  if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")) return true;
+  const sel = window.getSelection ? window.getSelection() : null;
+  if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
+    const node = sel.getRangeAt(0).commonAncestorContainer;
+    const elem = node.nodeType === 1 ? node : node.parentElement;
+    if (elem && elem.closest("main")) return true;   /* don't yank text mid-copy */
+  }
+  return false;
+}
+
+function applyPayload(payload) {
   latest = payload;
-  renderStats(r, payload.status);
-  renderTimeline(r);
-  renderFindings(r);
-  renderTalkers(r);
-  renderServices(r);
-  renderFlows(r);
-  renderDns(r);
-  renderTls(r);
-  renderBeacons(r);
-  el("footer").textContent =
-    `${r.tool} · report generated ${r.generated_at} · source ${r.source}`;
+  pending = null;
+  rerender();
+  updateHold();
+}
+
+function applyPending() {
+  if (pending && !interacting()) applyPayload(pending);
+  else updateHold();
+}
+
+function updateHold() {
+  const btn = el("pause");
+  btn.classList.toggle("on", paused);
+  btn.setAttribute("aria-pressed", String(paused));
+  setText(btn, paused ? "paused" : "pause");
+  const hint = el("holdhint");
+  if (pending) {
+    hint.hidden = false;
+    setText(hint, paused ? "1 newer snapshot held — resume to apply" : "newer snapshot held while you work");
+  } else {
+    hint.hidden = true;
+  }
 }
 
 function setStatus(text, cls) {
-  el("statustext").textContent = text;
+  setText(el("statustext"), text);
   el("dot").className = `dot ${cls || ""}`;
 }
 
 async function poll() {
+  let res;
   try {
-    const res = await fetch("api/report", { cache: "no-store" });
+    res = await fetch("api/report", { cache: "no-store" });
+  } catch (e) {
+    setStatus(`disconnected (${e.message || "network error"})`, "err");
+    return;
+  }
+  try {
     if (res.status === 503) {
-      setStatus("waiting for first snapshot", "");
+      /* Normal during the first seconds of a live capture: the analyzer has
+         not published a snapshot yet. Not an error. */
+      setStatus("waiting for the first snapshot", "");
+      if (!latest) showWaiting();
       return;
     }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const payload = await res.json();
-    el("source").textContent = payload.status.source || payload.report.source;
-    if (payload.generation !== lastGeneration) {
-      lastGeneration = payload.generation;
-      render(payload);
+    if (!payload || !payload.report) throw new Error("malformed payload");
+
+    setText(el("source"), payload.status.source || payload.report.source);
+
+    const changed = !latest || payload.generation !== latest.generation;
+    if (changed) {
+      if (interacting()) pending = payload;
+      else applyPayload(payload);
+    } else if (latest) {
+      latest.status = payload.status;
     }
+    updateHold();
+
     const s = payload.status;
-    if (s.live && s.running) {
-      setStatus(`live · ${s.packets.toLocaleString()} packets`, "live");
-    } else if (s.live) {
-      setStatus("capture stopped", "");
-    } else {
-      setStatus(`${payload.report.summary.packets.toLocaleString()} packets analysed`, "");
-    }
+    if (s.live && s.running) setStatus(`live · ${num(s.packets)} packets`, paused ? "hold" : "live");
+    else if (s.live) setStatus("capture stopped", "");
+    else setStatus(`${num(payload.report.summary.packets)} packets analysed`, "");
   } catch (e) {
-    setStatus(`disconnected (${e.message})`, "err");
+    setStatus(`error (${e.message || "bad response"})`, "err");
   }
 }
 
-el("flowfilter").addEventListener("input", (e) => {
-  flowFilter = e.target.value;
-  if (latest) renderFlows(latest.report);
-});
-window.addEventListener("resize", () => { if (latest) renderTimeline(latest.report); });
+function showWaiting() {
+  const host = el("findings");
+  if (host.dataset.waiting === "1") return;
+  host.dataset.waiting = "1";
+  host.append(emptyBlock("Waiting for the analyzer to publish its first snapshot. Nothing has been " +
+    "captured or decoded yet — this panel is empty because there is no data, not because the capture is clean."));
+}
 
-poll();
-setInterval(poll, 2000);
+/* =====================================================================
+   Keyboard, wiring, boot
+   ===================================================================== */
+
+function moveFlowSelection(delta) {
+  if (!flowOrder.length) return;
+  const at = ui.selectedFlow ? flowOrder.indexOf(ui.selectedFlow) : -1;
+  let next = at < 0 ? (delta > 0 ? 0 : flowOrder.length - 1) : at + delta;
+  next = Math.max(0, Math.min(flowOrder.length - 1, next));
+  const key = flowOrder[next];
+  if (!key) return;
+  ui.selectedFlow = key;
+  saveState();
+  renderDrawer();
+  if (latest) renderFlows(latest.report, buildCtx(latest.report));
+  const row = flowTable.rowEl(key);
+  if (row) row.scrollIntoView({ block: "nearest" });
+}
+
+function wireKeyboard() {
+  document.addEventListener("keydown", (e) => {
+    const active = document.activeElement;
+    const typing = active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA");
+
+    if (e.key === "/" && !typing && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      el("q").focus();
+      el("q").select();
+      return;
+    }
+    if (e.key === "Escape") {
+      if (typing) { active.blur(); applyPending(); return; }
+      if (ui.selectedFlow) { closeDrawer(); return; }
+      const win = ui.filters.find((f) => f.kind === "window");
+      if (win) { removeFilter(win); return; }
+      if (ui.filters.length || ui.q) clearFilters();
+      return;
+    }
+    if (typing) return;
+    if (e.key === "ArrowDown" || e.key === "j") { e.preventDefault(); moveFlowSelection(1); }
+    else if (e.key === "ArrowUp" || e.key === "k") { e.preventDefault(); moveFlowSelection(-1); }
+  });
+}
+
+function wireControls() {
+  const q = el("q");
+  q.value = ui.q;
+  let debounce = 0;
+  q.addEventListener("input", () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => {
+      ui.q = q.value;
+      saveState();
+      rerender();
+    }, 130);
+  });
+  /* Focus is the deferral trigger, so releasing it is what lets held data in. */
+  q.addEventListener("blur", () => setTimeout(applyPending, 0));
+
+  el("themeseg").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-theme]");
+    if (!btn) return;
+    ui.theme = btn.dataset.theme;
+    saveState();
+    applyTheme();
+  });
+
+  el("metricseg").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-metric]");
+    if (!btn) return;
+    ui.metric = btn.dataset.metric;
+    saveState();
+    syncMetricButtons();
+    drawTimeline();
+  });
+
+  el("pause").addEventListener("click", () => {
+    paused = !paused;
+    if (!paused) applyPending(); else updateHold();
+  });
+
+  el("findtoggle").addEventListener("click", () => {
+    if (!latest) return;
+    const findings = latest.report.findings || [];
+    const anyOpen = findings.some((f) => !isCollapsed(f));
+    ui.collapsed = {};
+    for (const f of findings) ui.collapsed[f.id] = anyOpen;
+    setText(el("findtoggle"), anyOpen ? "expand all" : "collapse all");
+    saveState();
+    rerender();
+  });
+
+  el("drawerclose").addEventListener("click", closeDrawer);
+  el("backdrop").addEventListener("click", closeDrawer);
+
+  document.addEventListener("pointerup", () => setTimeout(applyPending, 0));
+  document.addEventListener("selectionchange", () => {
+    const sel = window.getSelection();
+    if (sel && sel.isCollapsed) applyPending();
+  });
+
+  let resizeTimer = 0;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(drawTimeline, 80);
+  });
+  if (window.matchMedia) {
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => drawTimeline();
+    if (mq.addEventListener) mq.addEventListener("change", onChange);
+    else if (mq.addListener) mq.addListener(onChange);
+  }
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
+}
+
+function syncMetricButtons() {
+  for (const b of el("metricseg").querySelectorAll("button")) {
+    b.setAttribute("aria-pressed", String(b.dataset.metric === ui.metric));
+  }
+}
+
+function boot() {
+  loadState();
+  /* A window filter cannot be reconstructed from a reload — its bounds belong
+     to a capture that may no longer be on screen. Drop it rather than lie. */
+  ui.filters = ui.filters.filter((f) => f.kind !== "window");
+
+  el("pause").after(h("span", { cls: "caveat", attrs: { id: "holdhint" } }));
+  el("holdhint").hidden = true;
+
+  initFlowTable();
+  initTalkers();
+  initServices();
+  initDns();
+  initTls();
+  initHttp();
+  initBeacons();
+
+  applyTheme();
+  syncMetricButtons();
+  wireTimeline();
+  wireControls();
+  wireKeyboard();
+  updateHold();
+
+  poll();
+  setInterval(poll, POLL_MS);
+}
+
+boot();
+
+})();
 </script>
 </body>
 </html>
