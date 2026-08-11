@@ -56,17 +56,65 @@ Thresholds belong in `AnalysisConfig`, and should get a CLI flag in
 
 `crates/cbna-web/assets/index.html` is a single self-contained file, no build
 step and no external requests. It polls `/api/report` every 2s and redraws only
-when the generation counter changes.
+when the generation counter changes. Nothing here is covered by `cargo test`, so
+the invariants below are enforced by reading only — be deliberate.
 
 Report content is attacker-influenced — hostnames, user agents, URIs. The
 dashboard inserts all of it via `textContent`; there is no `innerHTML` anywhere
-in that file and it must stay that way.
+in that file and it must stay that way. `h()` is the only element constructor
+and it takes text, never markup.
 
-Its `percent()` deliberately mirrors `cbna_core::time::human_percent`. Beacon
-jitter spans orders of magnitude and a fixed decimal count renders a 0.004%
-metronome and a 0.4% merely-regular flow identically. If you change the
-thresholds in one, change them in the other — both have tests pinned to the
-same inputs.
+### The filter model
+
+Filter chips are the spine of the page. `buildCtx()` compiles every active chip
+into one context per render and each panel narrows itself against it, so a
+finding's evidence, the flow table and the DNS panel always agree about what is
+in scope.
+
+- **Flows are the join table.** Panels whose rows carry no host or service field
+  are narrowed through the flows that survive the same filters
+  (`ctx.derived*`). Do not invent a different linkage for a new panel.
+- **A panel that cannot evaluate a filter must say so.** Every `panelMeta()`
+  call passes the list of filter kinds that panel actually `handled`; the header
+  then renders "⚠ not narrowed" for the rest. Silently ignoring a chip makes the
+  page assert a relationship the API never provided.
+- **Panel headers always show `shown of total`.** A filtered-to-empty panel and
+  a genuinely empty one look identical otherwise, and that misreads as "this
+  host did nothing else."
+- `window` is deliberately singular — a second time window is always an empty
+  intersection. Keep that in `addFilter()`.
+
+### The table engine
+
+`makeTable()` does keyed reconciliation: matched rows keep their DOM element and
+have only changed cells patched. That is what stops a 2s poll from destroying
+scroll position, text selection and the drawer. It depends entirely on row keys
+being **stable across polls** — key a new table on flow key or address, never on
+array index or anything derived from sort order.
+
+`interacting()` is the second guard: payloads are held, not applied, while the
+user is typing, dragging or mid-selection. If a new control can be interacted
+with over multiple frames, it belongs in that check.
+
+### State that outlives the process
+
+Filters, search text, sort, collapse state, the selected flow, the timeline
+metric and theme all persist in `localStorage`.
+`loadState()` re-validates every field on the way in — kind and value are
+type-checked, filters are capped at 24, sort directions must be ±1. That store
+is user-writable; treat it as untrusted input, not as your own output.
+
+### Two couplings that break silently
+
+`percent()` deliberately mirrors `cbna_core::time::human_percent`. Beacon jitter
+spans orders of magnitude and a fixed decimal count renders a 0.004% metronome
+and a 0.4% merely-regular flow identically. If you change the thresholds in one,
+change them in the other — both have tests pinned to the same inputs.
+
+Severity badge classes are derived from the severity string in the JSON, which
+is why `Severity` serializes lowercase to match its `Display` impl. Rename
+either spelling and badges lose their colour while the severity filter quietly
+matches nothing; `severity_serializes_lowercase_to_match_display` pins it.
 
 ## Sample data
 
