@@ -136,6 +136,10 @@ struct ServeArgs {
     #[arg(long, value_name = "EXPR")]
     filter: Option<String>,
 
+    /// Also write captured packets to this pcap file. Live capture only.
+    #[arg(long, short = 'w', value_name = "PATH")]
+    write: Option<PathBuf>,
+
     /// Address to bind the dashboard to.
     #[arg(long, default_value = "127.0.0.1:8787")]
     bind: SocketAddr,
@@ -275,6 +279,9 @@ fn cmd_serve(args: ServeArgs, _style: &render::Style) -> Result<()> {
     match (&args.file, &args.iface) {
         (Some(_), Some(_)) => bail!("pass either a capture file or --iface, not both"),
         (None, None) => bail!("pass a capture file, or --iface NAME for live capture"),
+        (Some(_), None) if args.write.is_some() => {
+            bail!("--write only applies to live capture; the source is already a file")
+        }
         (Some(file), None) => serve_file(file.clone(), args),
         (None, Some(_)) => serve_live(args),
     }
@@ -417,6 +424,36 @@ mod tests {
             Command::Serve(a) => {
                 let err = cmd_serve(a, &style).unwrap_err();
                 assert!(err.to_string().contains("--iface"));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn serve_rejects_write_without_a_live_source() {
+        let cli = Cli::try_parse_from(["cbna", "serve", "x.pcap", "-w", "out.pcap"]).unwrap();
+        let style = render::Style::detect(true);
+        match cli.command {
+            Command::Serve(a) => {
+                assert_eq!(a.write.as_deref(), Some(std::path::Path::new("out.pcap")));
+                let err = cmd_serve(a, &style).unwrap_err();
+                assert!(err.to_string().contains("only applies to live capture"));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn serve_accepts_write_with_an_interface() {
+        let cli = Cli::try_parse_from(["cbna", "serve", "--iface", "eth0", "-w", "session.pcap"])
+            .unwrap();
+        match cli.command {
+            Command::Serve(a) => {
+                assert_eq!(a.iface.as_deref(), Some("eth0"));
+                assert_eq!(
+                    a.write.as_deref(),
+                    Some(std::path::Path::new("session.pcap"))
+                );
             }
             _ => unreachable!(),
         }

@@ -62,6 +62,12 @@ Report content is attacker-influenced — hostnames, user agents, URIs. The
 dashboard inserts all of it via `textContent`; there is no `innerHTML` anywhere
 in that file and it must stay that way.
 
+Its `percent()` deliberately mirrors `cbna_core::time::human_percent`. Beacon
+jitter spans orders of magnitude and a fixed decimal count renders a 0.004%
+metronome and a 0.4% merely-regular flow identically. If you change the
+thresholds in one, change them in the other — both have tests pinned to the
+same inputs.
+
 ## Sample data
 
 `cargo run -p cbna --example make-sample -- samples/demo.pcap` writes a

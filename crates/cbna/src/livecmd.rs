@@ -180,6 +180,17 @@ pub fn serve_live(args: ServeArgs) -> Result<()> {
     let analysis_config = args.tuning.apply(args.top);
     let refresh = Duration::from_secs_f64(args.refresh.clamp(0.25, 60.0));
 
+    let mut writer = match &args.write {
+        Some(path) => {
+            let w = PcapWriter::create(path, link_type)
+                .with_context(|| format!("creating {}", path.display()))?;
+            eprintln!("Writing packets to {}", path.display());
+            Some(w)
+        }
+        None => None,
+    };
+    let write_path = args.write.clone();
+
     // The capture loop runs on its own thread and hands finished snapshots to
     // the server, so a slow HTTP client can never stall packet processing.
     let capture_state = state.clone();
@@ -192,6 +203,15 @@ pub fn serve_live(args: ServeArgs) -> Result<()> {
         while !capture_state.shutdown_requested() {
             match source.next_packet() {
                 Some(Ok(raw)) => {
+                    if let Some(w) = writer.as_mut() {
+                        // A capture file that silently stops part-way is worse
+                        // than one that never existed, so stop on write failure
+                        // rather than carrying on with a truncated artefact.
+                        if let Err(e) = w.write(&raw) {
+                            tracing::error!("writing to the capture file failed: {e}");
+                            break;
+                        }
+                    }
                     let pkt = decode(raw.meta, &raw.data, link_type);
                     analyzer.observe(&pkt);
                     packets += 1;
@@ -205,12 +225,29 @@ pub fn serve_live(args: ServeArgs) -> Result<()> {
 
             if last_publish.elapsed() >= refresh {
                 last_publish = Instant::now();
+                // Flush on the same tick as the snapshot: a dashboard session
+                // is usually ended by killing the process, and an unflushed
+                // buffer would lose the last packets.
+                if let Some(w) = writer.as_mut() {
+                    let _ = w.flush();
+                }
                 publish(&capture_state, &analyzer, &description, packets, started, {
                     source.dropped()
                 });
             }
         }
 
+        if let Some(w) = writer.as_mut() {
+            let _ = w.flush();
+            eprintln!(
+                "Wrote {} packet(s) to {}",
+                w.packets_written(),
+                write_path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
+            );
+        }
         publish(
             &capture_state,
             &analyzer,

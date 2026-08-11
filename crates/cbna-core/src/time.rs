@@ -105,6 +105,30 @@ pub fn human_bytes(n: u64) -> String {
     }
 }
 
+/// Format a 0.0-1.0 ratio as a percentage, with precision scaled to magnitude.
+///
+/// Beacon jitter spans orders of magnitude: a two-minute heartbeat drifting
+/// 5ms is 0.004%, while bursty traffic is 40%. Any fixed decimal count either
+/// collapses the tight ones into a meaningless "0%" — losing exactly the
+/// distinction that separates a metronome from a merely regular flow — or pads
+/// the loose ones with digits that imply precision the estimate does not have.
+pub fn human_percent(ratio: f64) -> String {
+    let pct = ratio * 100.0;
+    if !pct.is_finite() || pct <= 0.0 {
+        "0%".to_string()
+    } else if pct >= 10.0 {
+        format!("{pct:.0}%")
+    } else if pct >= 1.0 {
+        format!("{pct:.1}%")
+    } else if pct >= 0.1 {
+        format!("{pct:.2}%")
+    } else if pct >= 0.001 {
+        format!("{pct:.3}%")
+    } else {
+        "<0.001%".to_string()
+    }
+}
+
 /// Format a duration in seconds compactly (`1h02m`, `4.2s`, `310ms`).
 pub fn human_duration(secs: f64) -> String {
     if secs < 1.0 {
@@ -156,5 +180,24 @@ mod tests {
         assert_eq!(human_bytes(2048), "2.0 KiB");
         assert_eq!(human_duration(0.31), "310ms");
         assert_eq!(human_duration(90.0), "1m30s");
+    }
+
+    #[test]
+    fn percent_keeps_small_jitter_distinguishable() {
+        // The real values that motivated this: a 120s mDNS heartbeat and a 9s
+        // keepalive both rendered as "0%" under a fixed format.
+        assert_ne!(human_percent(0.000_044_8), human_percent(0.004_068));
+        assert_eq!(human_percent(0.004_068), "0.41%");
+        assert_eq!(human_percent(0.000_448), "0.045%");
+        assert_eq!(human_percent(0.0), "0%");
+        assert_eq!(human_percent(0.000_000_9), "<0.001%");
+    }
+
+    #[test]
+    fn percent_scales_precision_with_magnitude() {
+        assert_eq!(human_percent(0.4237), "42%");
+        assert_eq!(human_percent(0.0521), "5.2%");
+        assert_eq!(human_percent(0.0037), "0.37%");
+        assert_eq!(human_percent(f64::NAN), "0%");
     }
 }

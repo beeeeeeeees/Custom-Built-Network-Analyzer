@@ -4,7 +4,7 @@
 //! keeps the binary dependency-light and the output easy to pipe.
 
 use cbna_core::analysis::{Report, Severity};
-use cbna_core::time::{human_bytes, human_duration};
+use cbna_core::time::{human_bytes, human_duration, human_percent};
 use std::io::Write;
 
 /// ANSI styling, suppressed when output is redirected or `NO_COLOR` is set.
@@ -300,7 +300,7 @@ pub fn report(out: &mut impl Write, r: &Report, style: &Style, top: usize) -> st
             t.row(vec![
                 b.flow.clone(),
                 human_duration(b.interval),
-                format!("{:.0}%", b.jitter * 100.0),
+                human_percent(b.jitter),
                 b.samples.to_string(),
                 format!("{:.2}", b.confidence),
                 b.sni.clone().unwrap_or_default(),

@@ -521,7 +521,11 @@ mod tests {
         // Windows resolvers split the 2-byte length prefix into a separate
         // segment; the message then starts at byte 0 of the next one. Stripping
         // two bytes here would eat the transaction ID and lose the query name.
-        let pkt = decode(meta(), &tcp_frame(38154, 53, &dns_query()), LinkType::Ethernet);
+        let pkt = decode(
+            meta(),
+            &tcp_frame(38154, 53, &dns_query()),
+            LinkType::Ethernet,
+        );
         match &pkt.app {
             AppLayer::Dns(d) => {
                 assert_eq!(d.primary_name(), Some("update.microsoft.com"));
@@ -533,7 +537,11 @@ mod tests {
 
     #[test]
     fn lone_length_prefix_segment_is_not_mistaken_for_dns() {
-        let pkt = decode(meta(), &tcp_frame(38154, 53, &[0x00, 0x2a]), LinkType::Ethernet);
+        let pkt = decode(
+            meta(),
+            &tcp_frame(38154, 53, &[0x00, 0x2a]),
+            LinkType::Ethernet,
+        );
         assert_eq!(pkt.app, AppLayer::None);
         assert_eq!(pkt.protocol_label(), "TCP");
     }

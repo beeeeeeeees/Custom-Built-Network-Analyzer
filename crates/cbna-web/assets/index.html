@@ -219,6 +219,19 @@ function duration(s) {
   return `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
 }
 
+/* Mirrors human_percent() in cbna-core: beacon jitter spans orders of
+   magnitude, and a fixed decimal count collapses the tightest flows to "0%",
+   losing the distinction between a metronome and a merely regular flow. */
+function percent(ratio) {
+  const pct = ratio * 100;
+  if (!isFinite(pct) || pct <= 0) return "0%";
+  if (pct >= 10) return `${pct.toFixed(0)}%`;
+  if (pct >= 1) return `${pct.toFixed(1)}%`;
+  if (pct >= 0.1) return `${pct.toFixed(2)}%`;
+  if (pct >= 0.001) return `${pct.toFixed(3)}%`;
+  return "<0.001%";
+}
+
 function meter(value, max) {
   const wrap = document.createElement("div");
   wrap.className = "bar";
@@ -440,7 +453,7 @@ function renderBeacons(r) {
   replace("beacons", table(
     ["Flow", "Interval", "Jitter", "Samples", "Confidence", "SNI"],
     r.beacons.map(b => [
-      b.flow, duration(b.interval), `${(b.jitter * 100).toFixed(0)}%`,
+      b.flow, duration(b.interval), percent(b.jitter),
       b.samples, b.confidence.toFixed(2), b.sni || "",
     ]),
     ["mono", "num", "num", "num", "num", "mono"]

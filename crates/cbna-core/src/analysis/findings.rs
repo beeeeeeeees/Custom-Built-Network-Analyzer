@@ -7,7 +7,7 @@
 use super::{unanswered_syn_count, Analyzer};
 use crate::net::is_private;
 use crate::proto::shannon_entropy;
-use crate::time::{human_bytes, human_duration};
+use crate::time::{human_bytes, human_duration, human_percent};
 use crate::transport::is_cleartext_service;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
@@ -96,10 +96,10 @@ fn beaconing(a: &Analyzer, out: &mut Vec<Finding>) {
 
     let evidence = beacons.iter().take(12).map(|b| {
         format!(
-            "{} every {} (jitter {:.0}%, {} samples, confidence {:.2}){}",
+            "{} every {} (jitter {}, {} samples, confidence {:.2}){}",
             b.flow,
             human_duration(b.interval),
-            b.jitter * 100.0,
+            human_percent(b.jitter),
             b.samples,
             b.confidence,
             b.sni

@@ -117,7 +117,11 @@ Capturing needs elevated privileges: Administrator on Windows, root or
 cbna devices                                  # list interfaces
 cbna capture --iface "\Device\NPF_{...}" --duration 30 -w out.pcap
 cbna serve --iface "\Device\NPF_{...}" --filter "not port 22"
+cbna serve --iface "\Device\NPF_{...}" -w session.pcap   # watch live and keep the packets
 ```
+
+`serve -w` flushes on every dashboard refresh rather than only at shutdown, so
+a session ended by killing the process still leaves a complete, readable file.
 
 ## Try it without a capture
 
@@ -141,6 +145,7 @@ cbna analyze <FILE>            Analyse a capture file
 cbna serve [FILE]              Web dashboard
   --iface <NAME>               Live capture instead of a file
   --filter <EXPR>              BPF filter for live capture
+  -w, --write <PATH>           Also save live packets to a pcap
   --bind <ADDR>                Default 127.0.0.1:8787
   --refresh <SECS>             Snapshot interval when live (default 2)
 
@@ -186,7 +191,7 @@ seconds of a live run.
 
 ## Testing
 
-86 tests, run with `cargo test --workspace`. They cover the decoders against
+93 tests, run with `cargo test --workspace`. They cover the decoders against
 truncated, malformed, and hostile input (cyclic DNS compression pointers,
 implausible packet lengths, arbitrary byte fuzz across every link type), the
 beacon scorer against metronomes, jittered beacons, dropped check-ins and bursty
