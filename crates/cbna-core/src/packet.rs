@@ -377,13 +377,23 @@ fn decode_app(pkt: &mut DecodedPacket, ports: (u16, u16), payload: &[u8], tcp: b
     let dns_port = matches!(sp, 53 | 5353 | 5355) || matches!(dp, 53 | 5353 | 5355);
 
     if dns_port {
-        // Over TCP, DNS is framed with a 2-byte length prefix.
-        let body = if tcp && payload.len() > 2 {
-            &payload[2..]
+        // Over TCP, DNS is framed with a 2-byte length prefix — but the prefix
+        // does not have to share a segment with the message it describes.
+        // Windows resolvers commonly push the two bytes on their own and send
+        // the message in the next segment, so stripping unconditionally would
+        // eat the transaction ID and corrupt every query. Only strip a prefix
+        // that actually accounts for the rest of the payload, and fall back to
+        // reading the payload as a bare message.
+        let prefixed = if tcp && payload.len() > 2 {
+            let declared = u16::from_be_bytes([payload[0], payload[1]]) as usize;
+            (declared == payload.len() - 2).then(|| &payload[2..])
         } else {
-            payload
+            None
         };
-        if let Some(msg) = proto::dns::parse(body) {
+        let decoded = prefixed
+            .and_then(proto::dns::parse)
+            .or_else(|| proto::dns::parse(payload));
+        if let Some(msg) = decoded {
             pkt.app = AppLayer::Dns(Box::new(msg));
             return;
         }
@@ -467,6 +477,65 @@ mod tests {
             other => panic!("expected DNS, got {other:?}"),
         }
         assert!(pkt.summary().contains("DNS query update.microsoft.com"));
+    }
+
+    /// Build an Ethernet/IPv4/TCP frame carrying `payload`.
+    fn tcp_frame(src_port: u16, dst_port: u16, payload: &[u8]) -> Vec<u8> {
+        let mut tcp = Vec::new();
+        tcp.extend_from_slice(&src_port.to_be_bytes());
+        tcp.extend_from_slice(&dst_port.to_be_bytes());
+        tcp.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 0]);
+        tcp.extend_from_slice(&[0x50, 0x18]); // offset 5, PSH|ACK
+        tcp.extend_from_slice(&[0xff, 0xff, 0, 0, 0, 0]);
+        tcp.extend_from_slice(payload);
+
+        let total_len = (20 + tcp.len()) as u16;
+        let mut ip = vec![0x45, 0x00];
+        ip.extend_from_slice(&total_len.to_be_bytes());
+        ip.extend_from_slice(&[0x00, 0x01, 0x40, 0x00, 0x40, proto_num::TCP, 0x00, 0x00]);
+        ip.extend_from_slice(&[192, 168, 1, 9]);
+        ip.extend_from_slice(&[192, 168, 1, 1]);
+        ip.extend_from_slice(&tcp);
+
+        let mut eth = vec![0u8; 12];
+        eth.extend_from_slice(&[0x08, 0x00]);
+        eth.extend_from_slice(&ip);
+        eth
+    }
+
+    #[test]
+    fn decodes_dns_over_tcp_with_the_length_prefix_attached() {
+        let msg = dns_query();
+        let mut payload = (msg.len() as u16).to_be_bytes().to_vec();
+        payload.extend_from_slice(&msg);
+
+        let pkt = decode(meta(), &tcp_frame(38154, 53, &payload), LinkType::Ethernet);
+        match &pkt.app {
+            AppLayer::Dns(d) => assert_eq!(d.primary_name(), Some("update.microsoft.com")),
+            other => panic!("expected DNS, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decodes_dns_over_tcp_when_the_prefix_arrived_in_its_own_segment() {
+        // Windows resolvers split the 2-byte length prefix into a separate
+        // segment; the message then starts at byte 0 of the next one. Stripping
+        // two bytes here would eat the transaction ID and lose the query name.
+        let pkt = decode(meta(), &tcp_frame(38154, 53, &dns_query()), LinkType::Ethernet);
+        match &pkt.app {
+            AppLayer::Dns(d) => {
+                assert_eq!(d.primary_name(), Some("update.microsoft.com"));
+                assert_eq!(d.transaction_id, 0xabcd);
+            }
+            other => panic!("expected DNS, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lone_length_prefix_segment_is_not_mistaken_for_dns() {
+        let pkt = decode(meta(), &tcp_frame(38154, 53, &[0x00, 0x2a]), LinkType::Ethernet);
+        assert_eq!(pkt.app, AppLayer::None);
+        assert_eq!(pkt.protocol_label(), "TCP");
     }
 
     #[test]
