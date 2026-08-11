@@ -1,0 +1,18 @@
+[package]
+name = "cbna-capture"
+description = "Packet sources for the Custom Built Network Analyzer: pcap/pcapng files and live interfaces"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Live capture via libpcap/Npcap. Requires the Npcap SDK on Windows; see the
+# README for the one-time setup.
+live = ["dep:pcap"]
+
+[dependencies]
+cbna-core.workspace = true
+thiserror.workspace = true
+pcap = { workspace = true, optional = true }

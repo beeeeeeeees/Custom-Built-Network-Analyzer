@@ -1,0 +1,10 @@
+# Points the `pcap` crate's build script at the vendored Npcap SDK so
+# `cargo build --features live` works without any environment setup.
+#
+# Only consulted when the `live` feature pulls in `pcap`; default builds ignore
+# it entirely. `relative = true` resolves the path against this file's parent,
+# so it works regardless of the directory cargo is invoked from.
+#
+# Run `scripts/fetch-npcap-sdk.ps1` once to populate the directory.
+[env]
+LIBPCAP_LIBDIR = { value = "vendor/npcap-sdk/Lib/x64", relative = true }

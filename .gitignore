@@ -1,0 +1,16 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# capture artifacts
+*.pcap
+*.pcapng
+!tests/data/*.pcap
+!tests/data/*.pcapng
+
+# analysis output
+*.report.json
+/out
+
+# vendored build-time SDK; run scripts/fetch-npcap-sdk.ps1 to restore
+/vendor

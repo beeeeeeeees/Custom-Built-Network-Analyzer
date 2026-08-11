@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CBNA — Network Analyzer</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel-2: #1c2230; --line: #2b3444;
+    --fg: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+    --high: #f85149; --medium: #d29922; --low: #58a6ff; --info: #8b949e;
+    --ok: #3fb950;
+    --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f8fa; --panel: #ffffff; --panel-2: #f0f3f6; --line: #d8dee4;
+      --fg: #1f2328; --muted: #59636e; --accent: #0969da;
+      --high: #cf222e; --medium: #9a6700; --low: #0969da; --info: #59636e;
+      --ok: #1a7f37;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+    padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { margin: 0; font-size: 16px; letter-spacing: .02em; }
+  header h1 span { color: var(--accent); }
+  .src { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .pill {
+    margin-left: auto; display: inline-flex; align-items: center; gap: 7px;
+    font-size: 12px; color: var(--muted);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.live { background: var(--ok); animation: pulse 1.6s ease-in-out infinite; }
+  .dot.err { background: var(--high); }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
+
+  main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+  .grid { display: grid; gap: 14px; }
+  .stats { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-bottom: 18px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .stat .v { font-size: 21px; font-weight: 600; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .stat .s { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+
+  .cols { grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); align-items: start; }
+  section {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; overflow: hidden;
+  }
+  section > h2 {
+    margin: 0; padding: 10px 14px; font-size: 12px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
+    border-bottom: 1px solid var(--line); background: var(--panel-2);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .body { max-height: 430px; overflow: auto; }
+  .wide { grid-column: 1 / -1; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 14px; border-bottom: 1px solid var(--line); }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 500;
+       position: sticky; top: 0; background: var(--panel); }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--panel-2); }
+  td.mono, th.mono { font-family: var(--mono); font-size: 12px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--mono); font-size: 12px; }
+  .empty { padding: 22px 14px; color: var(--muted); font-size: 13px; }
+
+  .finding { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  .finding:last-child { border-bottom: none; }
+  .finding .top { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; }
+  .sev {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .07em; font-weight: 700;
+    padding: 2px 7px; border-radius: 4px; border: 1px solid currentColor;
+  }
+  .sev.high { color: var(--high); } .sev.medium { color: var(--medium); }
+  .sev.low { color: var(--low); } .sev.info { color: var(--info); }
+  .finding .title { font-weight: 600; }
+  .finding .id { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .finding .detail { color: var(--muted); margin-top: 5px; font-size: 13px; }
+  .finding ul { margin: 8px 0 0; padding-left: 18px; font-family: var(--mono); font-size: 11.5px; }
+  .finding li { margin: 2px 0; word-break: break-all; }
+
+  .bar { height: 5px; background: var(--panel-2); border-radius: 3px; overflow: hidden; min-width: 46px; }
+  .bar > i { display: block; height: 100%; background: var(--accent); }
+
+  #timeline { width: 100%; height: 96px; display: block; }
+  input[type=search] {
+    background: var(--bg); border: 1px solid var(--line); color: var(--fg);
+    border-radius: 5px; padding: 3px 8px; font-size: 12px; font-family: var(--mono); width: 190px;
+  }
+  footer { padding: 16px 20px 34px; color: var(--muted); font-size: 12px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>CBNA <span>·</span> Custom Built Network Analyzer</h1>
+  <div class="src" id="source">connecting…</div>
+  <div class="pill"><span class="dot" id="dot"></span><span id="statustext">waiting for data</span></div>
+</header>
+
+<main>
+  <div class="grid stats" id="stats"></div>
+
+  <section class="wide" style="margin-bottom:14px">
+    <h2>Traffic over time <span id="tlmeta" class="src"></span></h2>
+    <canvas id="timeline"></canvas>
+  </section>
+
+  <div class="grid cols">
+    <section class="wide">
+      <h2>Findings <span id="findcount" class="src"></span></h2>
+      <div class="body" id="findings"></div>
+    </section>
+
+    <section>
+      <h2>Top talkers</h2>
+      <div class="body" id="talkers"></div>
+    </section>
+
+    <section>
+      <h2>Services</h2>
+      <div class="body" id="services"></div>
+    </section>
+
+    <section class="wide">
+      <h2>Flows <input type="search" id="flowfilter" placeholder="filter…" spellcheck="false"></h2>
+      <div class="body" id="flows"></div>
+    </section>
+
+    <section>
+      <h2>DNS</h2>
+      <div class="body" id="dns"></div>
+    </section>
+
+    <section>
+      <h2>TLS</h2>
+      <div class="body" id="tls"></div>
+    </section>
+
+    <section class="wide" id="beaconsection">
+      <h2>Beacon candidates</h2>
+      <div class="body" id="beacons"></div>
+    </section>
+  </div>
+</main>
+
+<footer id="footer"></footer>
+
+<script>
+"use strict";
+
+let lastGeneration = -1;
+let flowFilter = "";
+let latest = null;
+
+const el = (id) => document.getElementById(id);
+
+/* Text nodes only — report content is attacker-influenced (hostnames, user
+   agents, URIs), so nothing from the wire is ever parsed as HTML. */
+function cell(text, cls) {
+  const td = document.createElement("td");
+  if (cls) td.className = cls;
+  td.textContent = text === null || text === undefined ? "" : String(text);
+  return td;
+}
+
+function table(headers, rows, aligns) {
+  if (!rows.length) {
+    const d = document.createElement("div");
+    d.className = "empty";
+    d.textContent = "Nothing observed.";
+    return d;
+  }
+  const t = document.createElement("table");
+  const thead = t.createTHead().insertRow();
+  headers.forEach((h, i) => {
+    const th = document.createElement("th");
+    th.textContent = h;
+    if (aligns && aligns[i] === "num") th.style.textAlign = "right";
+    thead.appendChild(th);
+  });
+  const tb = t.createTBody();
+  for (const row of rows) {
+    const tr = tb.insertRow();
+    row.forEach((v, i) => {
+      if (v instanceof HTMLElement) {
+        const td = document.createElement("td");
+        td.appendChild(v);
+        tr.appendChild(td);
+      } else {
+        tr.appendChild(cell(v, aligns ? aligns[i] : null));
+      }
+    });
+  }
+  return t;
+}
+
+function bytes(n) {
+  if (n === null || n === undefined) return "";
+  const u = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let v = n, i = 0;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return i === 0 ? `${n} B` : `${v.toFixed(1)} ${u[i]}`;
+}
+
+function duration(s) {
+  if (s < 1) return `${Math.round(s * 1000)}ms`;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m${String(Math.floor(s % 60)).padStart(2, "0")}s`;
+  return `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
+}
+
+function meter(value, max) {
+  const wrap = document.createElement("div");
+  wrap.className = "bar";
+  const fill = document.createElement("i");
+  fill.style.width = max > 0 ? `${Math.max(2, (value / max) * 100)}%` : "0";
+  wrap.appendChild(fill);
+  return wrap;
+}
+
+function replace(id, node) {
+  const host = el(id);
+  host.textContent = "";
+  host.appendChild(node);
+}
+
+function renderStats(r, status) {
+  const s = r.summary;
+  const items = [
+    ["Packets", s.packets.toLocaleString(), `${s.packets_per_sec.toFixed(1)}/s`],
+    ["Volume", bytes(s.bytes), `${(s.bits_per_sec / 1e6).toFixed(2)} Mbit/s`],
+    ["Flows", s.flows.toLocaleString(), `${s.hosts.toLocaleString()} hosts`],
+    ["Duration", duration(s.duration_secs), s.first_seen ? s.first_seen.slice(11, 19) + " UTC" : ""],
+    ["TCP / UDP", `${s.counts.tcp.toLocaleString()} / ${s.counts.udp.toLocaleString()}`,
+      `${s.counts.icmp} icmp · ${s.counts.arp} arp`],
+    ["Findings", String(r.findings.length),
+      `${r.findings.filter(f => f.severity === "high").length} high`],
+  ];
+  if (status && status.live) {
+    items.push(["Dropped", status.dropped.toLocaleString(), status.dropped ? "capture is behind" : "no loss"]);
+  }
+  const host = el("stats");
+  host.textContent = "";
+  for (const [k, v, sub] of items) {
+    const d = document.createElement("div");
+    d.className = "stat";
+    const kd = document.createElement("div"); kd.className = "k"; kd.textContent = k;
+    const vd = document.createElement("div"); vd.className = "v"; vd.textContent = v;
+    const sd = document.createElement("div"); sd.className = "s"; sd.textContent = sub;
+    d.append(kd, vd, sd);
+    host.appendChild(d);
+  }
+}
+
+function renderTimeline(r) {
+  const c = el("timeline");
+  const data = r.timeline || [];
+  const dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth || 900, h = 96;
+  c.width = w * dpr; c.height = h * dpr;
+  const ctx = c.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+
+  const css = getComputedStyle(document.documentElement);
+  const accent = css.getPropertyValue("--accent").trim();
+  const line = css.getPropertyValue("--line").trim();
+
+  if (!data.length) {
+    el("tlmeta").textContent = "";
+    ctx.fillStyle = css.getPropertyValue("--muted").trim();
+    ctx.font = "12px system-ui";
+    ctx.fillText("No timestamped traffic yet.", 14, h / 2);
+    return;
+  }
+
+  /* Buckets are per-second and sparse; fill the gaps so an idle stretch
+     reads as idle rather than being compressed away. */
+  const first = data[0][0], last = data[data.length - 1][0];
+  const span = Math.max(1, last - first + 1);
+  const cols = Math.min(span, Math.max(60, Math.floor(w / 3)));
+  const per = span / cols;
+  const buckets = new Array(cols).fill(0);
+  for (const [sec, , byteCount] of data) {
+    const i = Math.min(cols - 1, Math.floor((sec - first) / per));
+    buckets[i] += byteCount;
+  }
+  const max = Math.max(...buckets, 1);
+  const bw = w / cols;
+
+  ctx.strokeStyle = line;
+  ctx.beginPath(); ctx.moveTo(0, h - 0.5); ctx.lineTo(w, h - 0.5); ctx.stroke();
+
+  ctx.fillStyle = accent;
+  for (let i = 0; i < cols; i++) {
+    const bh = (buckets[i] / max) * (h - 10);
+    if (bh <= 0) continue;
+    ctx.fillRect(i * bw, h - bh, Math.max(1, bw - 0.6), bh);
+  }
+  el("tlmeta").textContent =
+    `${duration(span)} · peak ${bytes(max)} per ${per < 1.5 ? "second" : duration(per) + " bucket"}`;
+}
+
+function renderFindings(r) {
+  const host = el("findings");
+  host.textContent = "";
+  el("findcount").textContent = r.findings.length ? `${r.findings.length} total` : "";
+  if (!r.findings.length) {
+    const d = document.createElement("div");
+    d.className = "empty";
+    d.textContent = "No heuristics fired on this capture.";
+    host.appendChild(d);
+    return;
+  }
+  for (const f of r.findings) {
+    const wrap = document.createElement("div");
+    wrap.className = "finding";
+    const top = document.createElement("div");
+    top.className = "top";
+    const sev = document.createElement("span");
+    sev.className = `sev ${f.severity}`;
+    sev.textContent = f.severity;
+    const title = document.createElement("span");
+    title.className = "title";
+    title.textContent = f.title;
+    const id = document.createElement("span");
+    id.className = "id";
+    id.textContent = f.id;
+    top.append(sev, title, id);
+    const detail = document.createElement("div");
+    detail.className = "detail";
+    detail.textContent = f.detail;
+    wrap.append(top, detail);
+    if (f.evidence && f.evidence.length) {
+      const ul = document.createElement("ul");
+      for (const e of f.evidence) {
+        const li = document.createElement("li");
+        li.textContent = e;
+        ul.appendChild(li);
+      }
+      wrap.appendChild(ul);
+    }
+    host.appendChild(wrap);
+  }
+}
+
+function renderTalkers(r) {
+  const max = r.talkers.length ? r.talkers[0].total_bytes : 0;
+  replace("talkers", table(
+    ["Host", "", "Total", "Sent", "Received", "Peers"],
+    r.talkers.map(t => [
+      t.address + (t.private ? "" : " ↗"),
+      meter(t.total_bytes, max),
+      bytes(t.total_bytes), bytes(t.bytes_sent), bytes(t.bytes_received), t.peers,
+    ]),
+    ["mono", null, "num", "num", "num", "num"]
+  ));
+}
+
+function renderServices(r) {
+  replace("services", table(
+    ["Service", "Proto", "Port", "Flows", "Packets", "Bytes"],
+    r.services.map(s => [s.service, s.protocol, s.port, s.flows, s.packets, bytes(s.bytes)]),
+    ["mono", "mono", "num", "num", "num", "num"]
+  ));
+}
+
+function renderFlows(r) {
+  const n = flowFilter.toLowerCase();
+  const rows = r.top_flows.filter(f => !n ||
+    f.flow.toLowerCase().includes(n) ||
+    (f.sni || "").toLowerCase().includes(n) ||
+    (f.service || "").includes(n) ||
+    f.protocols.some(p => p.includes(n)));
+  replace("flows", table(
+    ["Flow", "Scope", "App", "SNI / host", "Packets", "Bytes", "Duration"],
+    rows.map(f => [
+      f.flow, f.scope, f.protocols.join(",") || (f.service || ""),
+      f.sni || "", f.packets, bytes(f.bytes), duration(f.duration_secs),
+    ]),
+    ["mono", null, "mono", "mono", "num", "num", "num"]
+  ));
+}
+
+function renderDns(r) {
+  const d = r.dns;
+  const host = el("dns");
+  host.textContent = "";
+  const meta = document.createElement("div");
+  meta.className = "empty";
+  meta.textContent =
+    `${d.unique_names} unique names · ${d.queries} queries · ${d.nxdomain} NXDOMAIN`;
+  host.appendChild(meta);
+  host.appendChild(table(
+    ["Name", "Lookups"],
+    d.top_names.map(([name, count]) => [name, count]),
+    ["mono", "num"]
+  ));
+}
+
+function renderTls(r) {
+  const t = r.tls;
+  const host = el("tls");
+  host.textContent = "";
+  const meta = document.createElement("div");
+  meta.className = "empty";
+  meta.textContent = `${t.handshakes} handshakes · ${t.unique_sni} unique SNI · ` +
+    `${t.no_sni} without SNI · ${t.obsolete_versions} obsolete`;
+  host.appendChild(meta);
+  host.appendChild(table(
+    ["SNI", "Count"],
+    t.top_sni.map(([n, c]) => [n, c]),
+    ["mono", "num"]
+  ));
+  if (t.top_ja3.length) {
+    const h = document.createElement("div");
+    h.className = "empty";
+    h.textContent = "JA3 client fingerprints";
+    host.appendChild(h);
+    host.appendChild(table(
+      ["JA3", "Count", "Example SNI"],
+      t.top_ja3.map(([hash, count, sni]) => [hash, count, sni || ""]),
+      ["mono", "num", "mono"]
+    ));
+  }
+}
+
+function renderBeacons(r) {
+  el("beaconsection").style.display = r.beacons.length ? "" : "none";
+  replace("beacons", table(
+    ["Flow", "Interval", "Jitter", "Samples", "Confidence", "SNI"],
+    r.beacons.map(b => [
+      b.flow, duration(b.interval), `${(b.jitter * 100).toFixed(0)}%`,
+      b.samples, b.confidence.toFixed(2), b.sni || "",
+    ]),
+    ["mono", "num", "num", "num", "num", "mono"]
+  ));
+}
+
+function render(payload) {
+  const r = payload.report;
+  latest = payload;
+  renderStats(r, payload.status);
+  renderTimeline(r);
+  renderFindings(r);
+  renderTalkers(r);
+  renderServices(r);
+  renderFlows(r);
+  renderDns(r);
+  renderTls(r);
+  renderBeacons(r);
+  el("footer").textContent =
+    `${r.tool} · report generated ${r.generated_at} · source ${r.source}`;
+}
+
+function setStatus(text, cls) {
+  el("statustext").textContent = text;
+  el("dot").className = `dot ${cls || ""}`;
+}
+
+async function poll() {
+  try {
+    const res = await fetch("api/report", { cache: "no-store" });
+    if (res.status === 503) {
+      setStatus("waiting for first snapshot", "");
+      return;
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const payload = await res.json();
+    el("source").textContent = payload.status.source || payload.report.source;
+    if (payload.generation !== lastGeneration) {
+      lastGeneration = payload.generation;
+      render(payload);
+    }
+    const s = payload.status;
+    if (s.live && s.running) {
+      setStatus(`live · ${s.packets.toLocaleString()} packets`, "live");
+    } else if (s.live) {
+      setStatus("capture stopped", "");
+    } else {
+      setStatus(`${payload.report.summary.packets.toLocaleString()} packets analysed`, "");
+    }
+  } catch (e) {
+    setStatus(`disconnected (${e.message})`, "err");
+  }
+}
+
+el("flowfilter").addEventListener("input", (e) => {
+  flowFilter = e.target.value;
+  if (latest) renderFlows(latest.report);
+});
+window.addEventListener("resize", () => { if (latest) renderTimeline(latest.report); });
+
+poll();
+setInterval(poll, 2000);
+</script>
+</body>
+</html>
