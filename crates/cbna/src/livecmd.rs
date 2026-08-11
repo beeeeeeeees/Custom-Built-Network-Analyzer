@@ -133,7 +133,7 @@ pub fn capture(args: CaptureArgs, style: &Style) -> Result<()> {
         if args.packets {
             let _ = writeln!(stdout, "{}", pkt.summary());
         }
-        analyzer.observe(&pkt);
+        analyzer.observe(&pkt, &raw.data);
         count += 1;
     }
 
@@ -213,7 +213,7 @@ pub fn serve_live(args: ServeArgs) -> Result<()> {
                         }
                     }
                     let pkt = decode(raw.meta, &raw.data, link_type);
-                    analyzer.observe(&pkt);
+                    analyzer.observe(&pkt, &raw.data);
                     packets += 1;
                 }
                 Some(Err(e)) => {

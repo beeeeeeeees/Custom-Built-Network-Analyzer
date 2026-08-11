@@ -15,6 +15,7 @@ pub mod link;
 pub mod net;
 pub mod packet;
 pub mod proto;
+pub mod reassembly;
 pub mod time;
 pub mod transport;
 

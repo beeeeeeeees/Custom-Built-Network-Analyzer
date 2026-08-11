@@ -50,6 +50,13 @@ pub struct HttpMessage {
     pub has_authorization: bool,
     pub has_cookie: bool,
     pub header_count: usize,
+    /// The blank line ending the header block was present.
+    ///
+    /// Without it the last header line is whatever bytes happened to fit in
+    /// this segment, so `Host: internal.corp` split across two packets reads
+    /// as `Host: inter` and any header after the split is simply absent. The
+    /// stream reassembler keys off this to decide what still needs rebuilding.
+    pub complete: bool,
 }
 
 impl HttpMessage {
@@ -77,7 +84,7 @@ impl HttpMessage {
 /// payload does not begin with a start line.
 pub fn parse(payload: &[u8]) -> Option<HttpMessage> {
     // Headers are ASCII by spec; bail early on binary payloads.
-    let head_end = find_header_end(payload);
+    let (head_end, complete) = find_header_end(payload);
     let head = &payload[..head_end];
     let text = std::str::from_utf8(head).ok()?;
     let mut lines = text.split("\r\n").filter(|l| !l.is_empty());
@@ -150,6 +157,7 @@ pub fn parse(payload: &[u8]) -> Option<HttpMessage> {
         }
     }
 
+    msg.complete = complete;
     Some(msg)
 }
 
@@ -171,17 +179,19 @@ fn empty() -> HttpMessage {
         has_authorization: false,
         has_cookie: false,
         header_count: 0,
+        complete: false,
     }
 }
 
-/// End of the header block, or the whole payload when the segment cuts it off.
-fn find_header_end(payload: &[u8]) -> usize {
+/// End of the header block, plus whether the terminating blank line was
+/// actually found rather than the payload simply running out.
+fn find_header_end(payload: &[u8]) -> (usize, bool) {
     const LIMIT: usize = 16 * 1024;
     let hay = &payload[..payload.len().min(LIMIT)];
-    hay.windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .map(|p| p + 2)
-        .unwrap_or(hay.len())
+    match hay.windows(4).position(|w| w == b"\r\n\r\n") {
+        Some(p) => (p + 2, true),
+        None => (hay.len(), false),
+    }
 }
 
 fn truncate(s: &str, max: usize) -> String {

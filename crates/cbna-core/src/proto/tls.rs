@@ -42,6 +42,13 @@ pub struct TlsHello {
     pub ja3: String,
     pub ja3_md5: String,
     pub session_id_len: usize,
+    /// The record's declared length was fully present in the payload.
+    ///
+    /// A ClientHello that spills into the next segment still yields whatever
+    /// extensions fit, so SNI and JA3 can be silently wrong — JA3 hashes the
+    /// extension list, and a truncated list hashes to a different client. The
+    /// reassembler uses this to decide whether to rebuild the record.
+    pub complete: bool,
 }
 
 /// Wire version to its human name. Free-standing because findings render a
@@ -90,6 +97,7 @@ fn parse_strict(payload: &[u8]) -> Result<Option<TlsHello>> {
     let record_len = r.be_u16()? as usize;
     // The handshake may span records; decode as much as this one carries.
     let available = record_len.min(r.remaining());
+    let complete = record_len <= r.remaining();
     let mut rec = r.sub(available, "tls handshake")?;
 
     let msg_type = rec.u8()?;
@@ -224,6 +232,7 @@ fn parse_strict(payload: &[u8]) -> Result<Option<TlsHello>> {
         ja3,
         ja3_md5,
         session_id_len,
+        complete,
     }))
 }
 

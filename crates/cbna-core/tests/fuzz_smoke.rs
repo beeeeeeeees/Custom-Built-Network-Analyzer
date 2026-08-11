@@ -116,3 +116,8 @@ fn tls_hello_never_panics() {
 fn http_message_never_panics() {
     run(fuzz::http_message);
 }
+
+#[test]
+fn tcp_stream_never_panics() {
+    run(fuzz::tcp_stream);
+}

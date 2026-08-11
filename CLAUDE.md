@@ -39,10 +39,39 @@ The `live` feature needs `vendor/npcap-sdk` on Windows; run
 - **Unbounded growth is a bug.** Per-flow sample vectors, DNS name sets, HTTP
   header values and evidence lists are all capped. Add a cap to anything new
   that grows per packet.
+- **`DecodedPacket` does not own its payload.** It carries `payload_offset` and
+  `payload_len` into the frame it was decoded from; `pkt.payload(frame)` gets
+  the bytes back. Copying every payload would roughly double what a capture
+  costs in memory, and almost nothing needs them — this is why
+  `Analyzer::observe` takes the frame as a second argument.
+
+## Stream reassembly
+
+`reassembly.rs` rebuilds the *head* of each TCP direction so a message split
+across segments is still decoded. Things to know before touching it:
+
+- **It only runs where single-segment decoding fell short.** A packet whose own
+  payload yielded a *complete* message is never buffered, or the message would
+  be indexed twice and every count would inflate.
+- **"Parsed" is not "complete".** `http::parse` succeeds on any valid start
+  line, so half a request returns a message with a truncated final header and
+  everything after the split missing. `HttpMessage::complete` and
+  `TlsHello::complete` exist for this, and `is_complete()` is what the
+  reassembler keys on. If you add a protocol, give it the same signal.
+- **Four caps hold the memory down** — bytes per stream, streams tracked, holes
+  per stream, and eager release on FIN/RST/parse. All four matter; see the
+  module docs for what each one stops.
+- **Overlapping writes are first-writer-wins**, and a disagreeing overlap is
+  counted and reported as `tcp-overlap-conflict`. Do not "fix" this by letting
+  the later segment win — which side wins is the entire substance of the
+  evasion, and silently picking one hides it.
 
 ## Fuzzing
 
-Fuzz target bodies live in `cbna_core::fuzz` and `cbna_capture::fuzz`, **not** in
+Six targets: frame decode, DNS, TLS, HTTP, capture files, and the stream
+reassembler.
+
+Their bodies live in `cbna_core::fuzz` and `cbna_capture::fuzz`, **not** in
 `fuzz/fuzz_targets/*.rs`. Those files are six-line wrappers on purpose: the same
 functions are driven by `tests/fuzz_smoke.rs` in both crates, so the nightly-only
 fuzzer and the stable test suite can never diverge. Add a new parser, add an

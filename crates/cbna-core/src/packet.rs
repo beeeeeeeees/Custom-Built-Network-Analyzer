@@ -101,10 +101,26 @@ pub struct DecodedPacket {
     pub app: AppLayer,
     /// Bytes of transport payload present in the capture.
     pub payload_len: usize,
+    /// Offset of that payload within the frame this packet was decoded from.
+    ///
+    /// The payload bytes themselves are deliberately not stored — copying them
+    /// for every packet would double the memory a capture costs, and almost
+    /// nothing needs them. A caller that still holds the frame can recover them
+    /// with `&frame[payload_offset..][..payload_len]`, which is how the stream
+    /// reassembler gets its input.
+    pub payload_offset: usize,
     pub warnings: Vec<String>,
 }
 
 impl DecodedPacket {
+    /// Transport payload, recovered from the frame this packet was decoded
+    /// from. Empty if `frame` is not that frame, so a mismatched caller gets
+    /// nothing rather than someone else's bytes.
+    pub fn payload<'a>(&self, frame: &'a [u8]) -> &'a [u8] {
+        let end = self.payload_offset.saturating_add(self.payload_len);
+        frame.get(self.payload_offset..end).unwrap_or(&[])
+    }
+
     pub fn src_ip(&self) -> Option<IpAddr> {
         match &self.network {
             NetworkLayer::Ipv4(h) => Some(IpAddr::V4(h.src)),
@@ -228,6 +244,7 @@ pub fn decode(meta: PacketMeta, bytes: &[u8], link_type: LinkType) -> DecodedPac
         transport: TransportLayer::None,
         app: AppLayer::None,
         payload_len: 0,
+        payload_offset: 0,
         warnings: Vec::new(),
     };
 
@@ -294,11 +311,11 @@ pub fn decode(meta: PacketMeta, bytes: &[u8], link_type: LinkType) -> DecodedPac
         }
     };
 
-    decode_network(&mut pkt, ethertype, l3);
+    decode_network(&mut pkt, ethertype, l3, bytes);
     pkt
 }
 
-fn decode_network(pkt: &mut DecodedPacket, ethertype: u16, l3: &[u8]) {
+fn decode_network(pkt: &mut DecodedPacket, ethertype: u16, l3: &[u8], frame: &[u8]) {
     match ethertype {
         link::ETHERTYPE_IPV4 => match net::parse_ipv4(l3) {
             Ok((ip, payload)) => {
@@ -306,7 +323,7 @@ fn decode_network(pkt: &mut DecodedPacket, ethertype: u16, l3: &[u8]) {
                 let can_decode_transport = ip.has_transport_header();
                 pkt.network = NetworkLayer::Ipv4(ip);
                 if can_decode_transport {
-                    decode_transport(pkt, proto, payload);
+                    decode_transport(pkt, proto, payload, frame);
                 } else {
                     pkt.payload_len = payload.len();
                 }
@@ -319,7 +336,7 @@ fn decode_network(pkt: &mut DecodedPacket, ethertype: u16, l3: &[u8]) {
                 let can_decode_transport = ip.has_transport_header();
                 pkt.network = NetworkLayer::Ipv6(ip);
                 if can_decode_transport {
-                    decode_transport(pkt, proto, payload);
+                    decode_transport(pkt, proto, payload, frame);
                 } else {
                     pkt.payload_len = payload.len();
                 }
@@ -334,13 +351,21 @@ fn decode_network(pkt: &mut DecodedPacket, ethertype: u16, l3: &[u8]) {
     }
 }
 
-fn decode_transport(pkt: &mut DecodedPacket, protocol: u8, l4: &[u8]) {
+/// Byte offset of `sub` within `whole`. Both always come from the same
+/// allocation here: every `sub` is a subslice the parsers carved out of the
+/// frame, so the subtraction is meaningful.
+fn offset_in(whole: &[u8], sub: &[u8]) -> usize {
+    (sub.as_ptr() as usize).saturating_sub(whole.as_ptr() as usize)
+}
+
+fn decode_transport(pkt: &mut DecodedPacket, protocol: u8, l4: &[u8], frame: &[u8]) {
     match protocol {
         proto_num::TCP => match transport::parse_tcp(l4) {
             Ok((tcp, payload)) => {
                 let ports = (tcp.src_port, tcp.dst_port);
                 pkt.transport = TransportLayer::Tcp(tcp);
                 pkt.payload_len = payload.len();
+                pkt.payload_offset = offset_in(frame, payload);
                 decode_app(pkt, ports, payload, true);
             }
             Err(e) => pkt.warnings.push(Warning::from(e).0),
@@ -350,6 +375,7 @@ fn decode_transport(pkt: &mut DecodedPacket, protocol: u8, l4: &[u8]) {
                 let ports = (udp.src_port, udp.dst_port);
                 pkt.transport = TransportLayer::Udp(udp);
                 pkt.payload_len = payload.len();
+                pkt.payload_offset = offset_in(frame, payload);
                 decode_app(pkt, ports, payload, false);
             }
             Err(e) => pkt.warnings.push(Warning::from(e).0),
@@ -367,11 +393,20 @@ fn decode_transport(pkt: &mut DecodedPacket, protocol: u8, l4: &[u8]) {
     }
 }
 
+fn decode_app(pkt: &mut DecodedPacket, ports: (u16, u16), payload: &[u8], tcp: bool) {
+    pkt.app = app_from_payload(ports, payload, tcp);
+}
+
 /// Try application decoders. Port hints come first, then content sniffing, so
 /// a service on a non-standard port is still identified.
-fn decode_app(pkt: &mut DecodedPacket, ports: (u16, u16), payload: &[u8], tcp: bool) {
+///
+/// Split out from [`decode`] because the stream reassembler runs the same
+/// decoders over a payload rebuilt from several segments. Both callers must
+/// identify a protocol the same way, or a message would be classified
+/// differently depending on how the sender happened to split it.
+pub fn app_from_payload(ports: (u16, u16), payload: &[u8], tcp: bool) -> AppLayer {
     if payload.is_empty() {
-        return;
+        return AppLayer::None;
     }
     let (sp, dp) = ports;
     let dns_port = matches!(sp, 53 | 5353 | 5355) || matches!(dp, 53 | 5353 | 5355);
@@ -394,22 +429,21 @@ fn decode_app(pkt: &mut DecodedPacket, ports: (u16, u16), payload: &[u8], tcp: b
             .and_then(proto::dns::parse)
             .or_else(|| proto::dns::parse(payload));
         if let Some(msg) = decoded {
-            pkt.app = AppLayer::Dns(Box::new(msg));
-            return;
+            return AppLayer::Dns(Box::new(msg));
         }
     }
 
     if !tcp {
-        return;
+        return AppLayer::None;
     }
 
     if let Some(hello) = proto::tls::parse(payload) {
-        pkt.app = AppLayer::Tls(Box::new(hello));
-        return;
+        return AppLayer::Tls(Box::new(hello));
     }
     if let Some(msg) = proto::http::parse(payload) {
-        pkt.app = AppLayer::Http(Box::new(msg));
+        return AppLayer::Http(Box::new(msg));
     }
+    AppLayer::None
 }
 
 #[cfg(test)]

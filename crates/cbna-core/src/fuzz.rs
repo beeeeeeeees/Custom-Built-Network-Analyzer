@@ -172,6 +172,80 @@ pub fn tls_hello(data: &[u8]) {
     }
 }
 
+/// The stream reassembler, driven by a script of segments the input controls.
+///
+/// This is the only stateful decoder in the tool, and the state is indexed by
+/// sequence numbers an attacker picks: overlapping writes, segments that
+/// arrive before the stream's own start, offsets that wrap the 32-bit sequence
+/// space. The arithmetic that places those into a buffer is where an
+/// out-of-bounds write would live, so it gets its own target rather than being
+/// reached incidentally through the frame decoder.
+pub fn tcp_stream(data: &[u8]) {
+    use crate::reassembly::Reassembler;
+
+    /// Records are 8 bytes of header then payload; stop well before a large
+    /// input turns one iteration into a long run.
+    const MAX_SEGMENTS: usize = 512;
+
+    let mut r = Reassembler::new();
+    let mut cur = data;
+    let mut n = 0;
+
+    while cur.len() >= 8 && n < MAX_SEGMENTS {
+        let seq = u32::from_be_bytes([cur[0], cur[1], cur[2], cur[3]]);
+        let flags = cur[4];
+        // One byte of port selector, so a single input can open several streams
+        // and reach the tracking cap.
+        let port = 40000u16.wrapping_add(cur[5] as u16);
+        let len = u16::from_be_bytes([cur[6], cur[7]]) as usize;
+        cur = &cur[8..];
+
+        let take = len.min(cur.len());
+        let (payload, rest) = cur.split_at(take);
+        cur = rest;
+
+        let frame = tcp_frame(port, seq, flags, payload);
+        let meta = PacketMeta {
+            index: n as u64,
+            timestamp: Timestamp::new(0, 0),
+            captured_len: frame.len() as u32,
+            wire_len: frame.len() as u32,
+        };
+        let pkt = decode(meta, &frame, LinkType::Ethernet);
+        black_box(r.push(&pkt, &frame).is_some());
+        n += 1;
+    }
+
+    let stats = r.stats();
+    black_box(stats.recovered);
+    black_box(stats.conflicting_overlaps);
+}
+
+/// Ethernet + IPv4 + TCP around `payload`.
+fn tcp_frame(sport: u16, seq: u32, flags: u8, payload: &[u8]) -> Vec<u8> {
+    let mut t = Vec::with_capacity(20 + payload.len());
+    t.extend_from_slice(&sport.to_be_bytes());
+    t.extend_from_slice(&80u16.to_be_bytes());
+    t.extend_from_slice(&seq.to_be_bytes());
+    t.extend_from_slice(&[0, 0, 0, 0]);
+    t.extend_from_slice(&[0x50, flags]);
+    t.extend_from_slice(&[0xff, 0xff, 0, 0, 0, 0]);
+    t.extend_from_slice(payload);
+
+    let total = (20 + t.len()) as u16;
+    let mut ip = vec![0x45, 0x00];
+    ip.extend_from_slice(&total.to_be_bytes());
+    ip.extend_from_slice(&[0, 1, 0x40, 0, 64, 6, 0, 0]);
+    ip.extend_from_slice(&[10, 0, 0, 1]);
+    ip.extend_from_slice(&[10, 0, 0, 2]);
+    ip.extend_from_slice(&t);
+
+    let mut eth = vec![0u8; 12];
+    eth.extend_from_slice(&[0x08, 0x00]);
+    eth.extend_from_slice(&ip);
+    eth
+}
+
 /// Text protocols fail differently from binary ones: unbounded header counts,
 /// enormous single values, header lines that never terminate.
 pub fn http_message(data: &[u8]) {

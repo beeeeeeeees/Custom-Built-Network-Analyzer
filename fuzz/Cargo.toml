@@ -49,3 +49,9 @@ name = "capture_file"
 path = "fuzz_targets/capture_file.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "tcp_stream"
+path = "fuzz_targets/tcp_stream.rs"
+test = false
+doc = false

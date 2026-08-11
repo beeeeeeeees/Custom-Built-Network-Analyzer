@@ -46,7 +46,9 @@ live capture and a saved file produce identical findings.
   walking), ICMP and ICMPv6
 - **L4** — TCP (flags, MSS, window scale, SACK, timestamps), UDP
 - **L7** — DNS (with name decompression), HTTP/1.x headers, TLS ClientHello and
-  ServerHello with SNI, ALPN, and **JA3 / JA3S** fingerprints
+  ServerHello with SNI, ALPN, and **JA3 / JA3S** fingerprints. Messages split
+  across TCP segments are reassembled before decoding, so a request whose
+  headers straddle a packet boundary is not missed.
 - **Link types** — Ethernet, raw IP, BSD/OpenBSD loopback, Linux cooked v1 and v2
 - **Files** — pcap (both byte orders, µs and ns timestamps) and pcapng
   (multi-section, `if_tsresol`-aware, EPB and SPB blocks)
@@ -66,6 +68,7 @@ benign thing produces the same pattern — these are leads, not verdicts.
 | `cleartext-http-credentials` | high | `Authorization` observed over plain HTTP (the value is never stored) |
 | `outbound-upload-heavy` | medium | Internal host pushing far more out than it pulls back |
 | `obsolete-tls` | medium | SSL 3.0 / TLS 1.0 / TLS 1.1 negotiated |
+| `tcp-overlap-conflict` | medium | Segments claiming the same sequence range with different bytes — the classic inspection-evasion shape |
 | `cleartext-service` | low | Unencrypted protocols carrying real traffic |
 | `capture-quality` | info | Snaplen truncation, fragments, decode warnings — caveats on everything above |
 
@@ -184,16 +187,21 @@ seconds of a live run.
   Everything from the wire is inserted as text nodes, never parsed as HTML.
 - **Credential values are never stored.** Cleartext `Authorization` is recorded
   as a boolean plus the request line.
-- **No stream reassembly.** HTTP is decoded when headers begin a segment, which
-  covers the first request/response of virtually every connection. IP fragments
-  are counted and flagged, not reassembled.
+- **TCP streams are reassembled at the head, not in full.** Each direction
+  buffers a bounded prefix (16 KiB) so a request line, header block or TLS hello
+  split across segments is still decoded, and out-of-order segments are placed
+  by sequence number. The buffer is released as soon as a message parses or the
+  cap is hit — this is not a general-purpose TCP stack, and nothing here needs
+  segment forty thousand. Bodies are not reassembled.
+- **IP fragments are counted and flagged, not reassembled.** Later fragments
+  contribute bytes but no transport detail.
 - **Memory is bounded.** Per-flow timestamp samples, DNS name sets, and header
   values are all capped, so a hostile or very long capture cannot grow the
   process without limit. Truncation is reported in the findings.
 
 ## Testing
 
-101 tests, run with `cargo test --workspace`. They cover the decoders against
+113 tests, run with `cargo test --workspace`. They cover the decoders against
 truncated, malformed, and hostile input (cyclic DNS compression pointers,
 implausible packet lengths, arbitrary byte fuzz across every link type), the
 beacon scorer against metronomes, jittered beacons, dropped check-ins and bursty
@@ -203,13 +211,17 @@ resolutions, and flow direction resolution.
 ### Fuzzing
 
 The parsers are the reason this project hand-rolls its decoders, so they get
-fuzzed rather than only unit-tested. `fuzz/` holds five [cargo-fuzz][cf] targets:
-frame decode across every link type, DNS, TLS, HTTP, and whole capture files.
+fuzzed rather than only unit-tested. `fuzz/` holds six [cargo-fuzz][cf] targets:
+frame decode across every link type, DNS, TLS, HTTP, whole capture files, and
+the TCP stream reassembler.
 
 ```bash
 cargo install cargo-fuzz          # needs a nightly toolchain
 cargo fuzz run capture_file       # or decode_frame / dns_message / tls_hello / http_message
 ```
+
+`tcp_stream` is worth attention too: it is the only stateful decoder, and the
+state is indexed by sequence numbers an attacker chooses.
 
 `capture_file` is the one to run longest. It parses a pcap/pcapng straight out
 of memory and feeds every packet the reader yields into the decoder, so a length

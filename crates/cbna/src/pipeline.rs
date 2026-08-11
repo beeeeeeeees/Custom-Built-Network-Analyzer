@@ -35,7 +35,7 @@ pub fn run(
                 if let Some(h) = hook.as_deref_mut() {
                     h(&pkt);
                 }
-                analyzer.observe(&pkt);
+                analyzer.observe(&pkt, &raw.data);
                 stats.packets += 1;
                 if limit.is_some_and(|n| stats.packets >= n) {
                     break;

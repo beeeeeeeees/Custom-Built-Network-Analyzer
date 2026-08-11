@@ -80,6 +80,7 @@ pub(super) fn collect(a: &Analyzer) -> Vec<Finding> {
     cleartext_credentials(a, &mut out);
     cleartext_services(a, &mut out);
     obsolete_tls(a, &mut out);
+    overlapping_segments(a, &mut out);
     arp_conflicts(a, &mut out);
     capture_quality(a, &mut out);
 
@@ -415,6 +416,36 @@ fn obsolete_tls(a: &Analyzer, out: &mut Vec<Finding>) {
     );
 }
 
+/// Two segments claiming the same sequence range with different bytes.
+///
+/// This is the shape of the classic inspection-evasion trick: send one payload
+/// that a monitor accepts and a second, overlapping one that the destination
+/// host prefers, so the two disagree about what was transmitted. It also
+/// happens for dull reasons — a broken middlebox, or a capture that merged two
+/// taps — which is why this is a lead rather than a verdict.
+fn overlapping_segments(a: &Analyzer, out: &mut Vec<Finding>) {
+    let n = a.reassembly.stats().conflicting_overlaps;
+    if n == 0 {
+        return;
+    }
+    out.push(
+        Finding::new(
+            "tcp-overlap-conflict",
+            Severity::Medium,
+            format!("{n} TCP segment(s) overlapped earlier data with different bytes"),
+            "Retransmissions normally repeat what they replace. A disagreement means \
+             the same sequence range carried two different payloads, which is how an \
+             attacker makes a monitor and the destination host read different requests. \
+             Duplicated capture points and rewriting middleboxes produce it too — check \
+             whether the capture merges more than one tap before escalating.",
+        )
+        .with(vec![format!(
+            "{n} conflicting overlap(s) across {} tracked stream(s); first writer was kept",
+            a.reassembly.tracked()
+        )]),
+    );
+}
+
 fn arp_conflicts(a: &Analyzer, out: &mut Vec<Finding>) {
     let conflicts: Vec<String> = a
         .arp
@@ -471,6 +502,21 @@ fn capture_quality(a: &Analyzer, out: &mut Vec<Finding>) {
             "{} IP fragment(s) seen; this tool does not reassemble, so later \
              fragments contribute bytes but no transport detail",
             c.fragments
+        ));
+    }
+    let re = a.reassembly.stats();
+    if re.recovered > 0 {
+        notes.push(format!(
+            "{} application message(s) were only readable after TCP stream \
+             reassembly; single-segment decoding alone would have missed them",
+            re.recovered
+        ));
+    }
+    if re.dropped_streams > 0 {
+        notes.push(format!(
+            "{} TCP direction(s) went untracked because the reassembly stream \
+             table was full, so split messages on those were not rebuilt",
+            re.dropped_streams
         ));
     }
     let external_only = a.hosts.keys().all(|ip| !is_private(*ip));
@@ -541,7 +587,7 @@ mod tests {
         for i in 0..8 {
             let name = format!("chunk{i}data.tunnel.example");
             let f = frame_udp_dns(&name, [10, 0, 0, 5], [10, 0, 0, 1]);
-            a.observe(&at(i as u64, i as f64, &f));
+            a.observe(&at(i as u64, i as f64, &f), &f);
         }
         let findings = a.findings();
         let hit = findings
@@ -572,8 +618,8 @@ mod tests {
             &tls_server_hello(0x0303),
         );
         let mut a = Analyzer::default();
-        a.observe(&at(1, 1.0, &old));
-        a.observe(&at(2, 2.0, &new));
+        a.observe(&at(1, 1.0, &old), &old);
+        a.observe(&at(2, 2.0, &new), &new);
 
         let findings = a.findings();
         let hit = findings
@@ -594,10 +640,47 @@ mod tests {
     }
 
     #[test]
+    fn credentials_split_across_segments_are_still_found() {
+        use crate::analysis::tests::tcp_seg;
+
+        // Splitting a request across two segments used to hide everything
+        // after the split: the first half parses as HTTP with a truncated Host
+        // and no Authorization at all, and nothing ever looked at the rest.
+        let head = b"POST /login HTTP/1.1\r\nHost: legacy.corp\r\nAuthor";
+        let tail = b"ization: Basic YWRtaW46cHc=\r\nAccept: */*\r\n\r\n";
+
+        let f1 = tcp_seg([10, 0, 0, 5], 44000, [10, 0, 0, 80], 80, 1000, head);
+        let f2 = tcp_seg(
+            [10, 0, 0, 5],
+            44000,
+            [10, 0, 0, 80],
+            80,
+            1000 + head.len() as u32,
+            tail,
+        );
+
+        let mut a = Analyzer::default();
+        a.observe(&at(1, 1.0, &f1), &f1);
+        a.observe(&at(2, 1.1, &f2), &f2);
+
+        assert_eq!(a.reassembly.stats().recovered, 1);
+        let findings = a.findings();
+        let hit = findings
+            .iter()
+            .find(|f| f.id == "cleartext-http-credentials")
+            .expect("split credentials must still be reported");
+        assert!(
+            hit.evidence.iter().any(|e| e.contains("legacy.corp")),
+            "evidence should name the real host, not the truncated one: {:?}",
+            hit.evidence
+        );
+    }
+
+    #[test]
     fn quiet_capture_produces_no_alarms() {
         let mut a = Analyzer::default();
         let f = frame_udp_dns("www.example.com", [10, 0, 0, 5], [10, 0, 0, 1]);
-        a.observe(&at(1, 1.0, &f));
+        a.observe(&at(1, 1.0, &f), &f);
         let findings = a.findings();
         assert!(
             findings.iter().all(|f| f.severity == Severity::Info),

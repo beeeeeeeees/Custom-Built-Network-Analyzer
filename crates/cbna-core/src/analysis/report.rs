@@ -304,8 +304,8 @@ mod tests {
     fn report_round_trips_through_json() {
         let mut a = Analyzer::default();
         let f = frame_udp_dns("www.example.com", [10, 0, 0, 5], [10, 0, 0, 1]);
-        a.observe(&at(1, 100.0, &f));
-        a.observe(&at(2, 103.0, &f));
+        a.observe(&at(1, 100.0, &f), &f);
+        a.observe(&at(2, 103.0, &f), &f);
 
         let report = a.report("unit-test.pcap");
         assert_eq!(report.summary.packets, 2);

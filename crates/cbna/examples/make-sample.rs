@@ -255,6 +255,65 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         arp_reply([192, 168, 1, 1], [0x00, 0x0c, 0x29, 0xde, 0xad, 0xbe]),
     ));
 
+    // 7b. The same credential leak, but split mid-header across two segments.
+    //     Neither segment shows the Authorization line on its own, so this only
+    //     appears once the stream is reassembled.
+    let head = b"GET /billing/export HTTP/1.1\r\n\
+                 Host: split.corp.local\r\n\
+                 User-Agent: curl/8.4.0\r\n\
+                 Authoriz";
+    let tail = b"ation: Basic c3BsaXQ6c2VjcmV0\r\n\
+                 Accept: */*\r\n\r\n";
+    // The SYN carries the sequence number the data continues from; a mismatch
+    // would leave the reassembler anchored to the wrong offset.
+    packets.push((
+        955.0,
+        tcp_seq(
+            &[192, 168, 1, 50],
+            45500,
+            &[192, 168, 1, 30],
+            80,
+            SYN,
+            0x1000_0000,
+            &[],
+        ),
+    ));
+    packets.push((
+        955.02,
+        tcp(
+            &[192, 168, 1, 30],
+            80,
+            &[192, 168, 1, 50],
+            45500,
+            SYN | ACK,
+            &[],
+        ),
+    ));
+    packets.push((
+        955.04,
+        tcp_seq(
+            &[192, 168, 1, 50],
+            45500,
+            &[192, 168, 1, 30],
+            80,
+            PSH | ACK,
+            0x1000_0001,
+            head,
+        ),
+    ));
+    packets.push((
+        955.06,
+        tcp_seq(
+            &[192, 168, 1, 50],
+            45500,
+            &[192, 168, 1, 30],
+            80,
+            PSH | ACK,
+            0x1000_0001 + head.len() as u32,
+            tail,
+        ),
+    ));
+
     // 8. A legacy appliance still negotiating TLS 1.0.
     packets.push((
         960.0,
@@ -413,10 +472,25 @@ fn ipv4_frag(src: &[u8], dst: &[u8], protocol: u8, payload: Vec<u8>, flags_frag:
 }
 
 fn tcp(src: &[u8], sport: u16, dst: &[u8], dport: u16, flags: u8, payload: &[u8]) -> Vec<u8> {
+    tcp_seq(src, sport, dst, dport, flags, 0x0000_1000, payload)
+}
+
+/// As `tcp`, but with the sequence number under control — needed for the
+/// segments that only make sense once reassembled in order.
+#[allow(clippy::too_many_arguments)]
+fn tcp_seq(
+    src: &[u8],
+    sport: u16,
+    dst: &[u8],
+    dport: u16,
+    flags: u8,
+    seq: u32,
+    payload: &[u8],
+) -> Vec<u8> {
     let mut t = Vec::new();
     t.extend_from_slice(&sport.to_be_bytes());
     t.extend_from_slice(&dport.to_be_bytes());
-    t.extend_from_slice(&[0x00, 0x00, 0x10, 0x00]); // seq
+    t.extend_from_slice(&seq.to_be_bytes());
     t.extend_from_slice(&[0x00, 0x00, 0x20, 0x00]); // ack
     t.extend_from_slice(&[0x50, flags]);
     t.extend_from_slice(&[0xfa, 0xf0, 0x00, 0x00, 0x00, 0x00]);

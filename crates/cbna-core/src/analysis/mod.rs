@@ -15,6 +15,7 @@ use crate::link::{ArpOp, MacAddr};
 use crate::net::proto_num;
 use crate::packet::{AppLayer, DecodedPacket, NetworkLayer, TransportLayer};
 use crate::proto::dns::parent_domain;
+use crate::reassembly::Reassembler;
 use crate::time::Timestamp;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::{IpAddr, Ipv4Addr};
@@ -152,6 +153,9 @@ pub struct Analyzer {
     pub hosts: HashMap<IpAddr, HostStat>,
     /// Traffic volume bucketed into one-second bins for the timeline chart.
     pub timeline: BTreeMap<i64, (u64, u64)>,
+    /// Rebuilds the head of each TCP direction so application messages split
+    /// across segments are still decoded.
+    pub reassembly: Reassembler,
 }
 
 impl Default for Analyzer {
@@ -172,16 +176,32 @@ impl Analyzer {
             arp: ArpIndex::default(),
             hosts: HashMap::new(),
             timeline: BTreeMap::new(),
+            reassembly: Reassembler::new(),
         }
     }
 
     /// Fold one decoded packet into every index.
-    pub fn observe(&mut self, pkt: &DecodedPacket) {
+    ///
+    /// `frame` is the buffer `pkt` was decoded from. It is needed because
+    /// `DecodedPacket` stores an offset to its payload rather than a copy of
+    /// it, and the stream reassembler works on those bytes. Pass an empty
+    /// slice and everything except reassembly still works.
+    pub fn observe(&mut self, pkt: &DecodedPacket, frame: &[u8]) {
         self.count(pkt);
         self.flows.observe(pkt);
         self.index_hosts(pkt);
         self.index_arp(pkt);
-        self.index_app(pkt);
+        self.index_app(&pkt.app, pkt);
+
+        // Anything the reassembler hands back was missed by single-segment
+        // decoding, so it has not been counted yet and must go through the
+        // same indexing a normal packet would.
+        if let Some(app) = self.reassembly.push(pkt, frame) {
+            self.index_app(&app, pkt);
+            if let Some((key, _)) = crate::flow::FlowKey::from_packet(pkt) {
+                self.flows.record_app(&key, &app);
+            }
+        }
     }
 
     fn count(&mut self, pkt: &DecodedPacket) {
@@ -276,8 +296,8 @@ impl Analyzer {
         }
     }
 
-    fn index_app(&mut self, pkt: &DecodedPacket) {
-        match &pkt.app {
+    fn index_app(&mut self, app: &AppLayer, pkt: &DecodedPacket) {
+        match app {
             AppLayer::Dns(d) => {
                 if let Some(server) = if d.is_response {
                     pkt.src_ip()
@@ -548,8 +568,8 @@ mod tests {
     fn counts_and_indexes_dns() {
         let mut a = Analyzer::default();
         let f = frame_udp_dns("telemetry.example.com", [10, 0, 0, 5], [10, 0, 0, 1]);
-        a.observe(&at(1, 100.0, &f));
-        a.observe(&at(2, 101.0, &f));
+        a.observe(&at(1, 100.0, &f), &f);
+        a.observe(&at(2, 101.0, &f), &f);
 
         assert_eq!(a.counters.packets, 2);
         assert_eq!(a.counters.udp, 2);
@@ -569,9 +589,9 @@ mod tests {
             [10, 0, 0, 6],
             [10, 0, 0, 1],
         );
-        a.observe(&at(1, 1.0, &quiet));
+        a.observe(&at(1, 1.0, &quiet), &quiet);
         for i in 0..5 {
-            a.observe(&at(i + 2, 1.0, &loud));
+            a.observe(&at(i + 2, 1.0, &loud), &loud);
         }
         let talkers = a.top_talkers(5);
         assert_eq!(talkers[0].address, "10.0.0.1"); // the server sees both sides
@@ -583,21 +603,12 @@ mod tests {
     fn services_separate_udp_and_tcp_on_the_same_port() {
         let mut a = Analyzer::default();
         // Two DNS-over-UDP flows and one TCP SYN to port 53 (scan residue).
-        a.observe(&at(
-            1,
-            1.0,
-            &frame_udp_dns("a.example.com", [10, 0, 0, 5], [10, 0, 0, 1]),
-        ));
-        a.observe(&at(
-            2,
-            2.0,
-            &frame_udp_dns("b.example.com", [10, 0, 0, 6], [10, 0, 0, 1]),
-        ));
-        a.observe(&at(
-            3,
-            3.0,
-            &tcp_syn([10, 0, 0, 9], 40000, [10, 0, 0, 1], 53),
-        ));
+        let a_query = frame_udp_dns("a.example.com", [10, 0, 0, 5], [10, 0, 0, 1]);
+        let b_query = frame_udp_dns("b.example.com", [10, 0, 0, 6], [10, 0, 0, 1]);
+        let syn = tcp_syn([10, 0, 0, 9], 40000, [10, 0, 0, 1], 53);
+        a.observe(&at(1, 1.0, &a_query), &a_query);
+        a.observe(&at(2, 2.0, &b_query), &b_query);
+        a.observe(&at(3, 3.0, &syn), &syn);
 
         let services = a.services(10);
         let dns_rows: Vec<_> = services.iter().filter(|s| s.service == "dns").collect();
@@ -640,6 +651,39 @@ mod tests {
         t.extend_from_slice(&sport.to_be_bytes());
         t.extend_from_slice(&dport.to_be_bytes());
         t.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 2]);
+        t.extend_from_slice(&[0x50, 0x18]);
+        t.extend_from_slice(&[0xff, 0xff, 0, 0, 0, 0]);
+        t.extend_from_slice(payload);
+
+        let total = (20 + t.len()) as u16;
+        let mut ip = vec![0x45, 0x00];
+        ip.extend_from_slice(&total.to_be_bytes());
+        ip.extend_from_slice(&[0, 1, 0x40, 0, 64, proto_num::TCP, 0, 0]);
+        ip.extend_from_slice(&src);
+        ip.extend_from_slice(&dst);
+        ip.extend_from_slice(&t);
+
+        let mut eth = vec![0; 12];
+        eth.extend_from_slice(&[0x08, 0x00]);
+        eth.extend_from_slice(&ip);
+        eth
+    }
+
+    /// A PSH|ACK segment with a caller-chosen sequence number, for driving the
+    /// stream reassembler.
+    pub(crate) fn tcp_seg(
+        src: [u8; 4],
+        sport: u16,
+        dst: [u8; 4],
+        dport: u16,
+        seq: u32,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let mut t = Vec::new();
+        t.extend_from_slice(&sport.to_be_bytes());
+        t.extend_from_slice(&dport.to_be_bytes());
+        t.extend_from_slice(&seq.to_be_bytes());
+        t.extend_from_slice(&[0, 0, 0, 0]);
         t.extend_from_slice(&[0x50, 0x18]);
         t.extend_from_slice(&[0xff, 0xff, 0, 0, 0, 0]);
         t.extend_from_slice(payload);

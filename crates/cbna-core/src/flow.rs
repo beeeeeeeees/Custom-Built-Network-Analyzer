@@ -27,7 +27,7 @@ pub struct FlowKey {
 }
 
 /// Which endpoint of the canonical key a packet travelled from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Direction {
     AToB,
     BToA,
@@ -328,8 +328,8 @@ impl Flow {
         }
     }
 
-    fn record_app(&mut self, pkt: &DecodedPacket) {
-        match &pkt.app {
+    fn record_app(&mut self, app: &AppLayer) {
+        match app {
             AppLayer::Dns(d) => {
                 self.protocols.insert("dns".into());
                 for q in &d.questions {
@@ -409,8 +409,18 @@ impl FlowTable {
             }
         }
         flow.stats_mut(dir).observe(pkt);
-        flow.record_app(pkt);
+        flow.record_app(&pkt.app);
         Some(key)
+    }
+
+    /// Record an application message that did not come from a single packet.
+    /// The stream reassembler recovers these, and they must land on the flow
+    /// exactly as a single-segment decode would, or a split request would be
+    /// counted differently from an unsplit one.
+    pub fn record_app(&mut self, key: &FlowKey, app: &AppLayer) {
+        if let Some(flow) = self.flows.get_mut(key) {
+            flow.record_app(app);
+        }
     }
 
     pub fn len(&self) -> usize {
