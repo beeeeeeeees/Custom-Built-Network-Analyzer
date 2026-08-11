@@ -125,7 +125,9 @@ a session ended by killing the process still leaves a complete, readable file.
 
 ## Try it without a capture
 
-A generator writes a synthetic pcap that trips every detector:
+A generator writes a synthetic pcap that trips all ten detectors — including a
+TLS 1.0 appliance, a fragmented datagram, and frames clipped by a short snaplen,
+so the capture-quality caveats appear too:
 
 ```powershell
 cargo run -p cbna --example make-sample -- samples/demo.pcap
@@ -191,7 +193,7 @@ seconds of a live run.
 
 ## Testing
 
-93 tests, run with `cargo test --workspace`. They cover the decoders against
+95 tests, run with `cargo test --workspace`. They cover the decoders against
 truncated, malformed, and hostile input (cyclic DNS compression pointers,
 implausible packet lengths, arbitrary byte fuzz across every link type), the
 beacon scorer against metronomes, jittered beacons, dropped check-ins and bursty

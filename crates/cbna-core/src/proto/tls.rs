@@ -44,16 +44,22 @@ pub struct TlsHello {
     pub session_id_len: usize,
 }
 
+/// Wire version to its human name. Free-standing because findings render a
+/// version recorded on a flow, long after the hello itself is gone.
+pub fn version_name(version: u16) -> &'static str {
+    match version {
+        0x0300 => "SSL 3.0",
+        0x0301 => "TLS 1.0",
+        0x0302 => "TLS 1.1",
+        0x0303 => "TLS 1.2",
+        0x0304 => "TLS 1.3",
+        _ => "unknown",
+    }
+}
+
 impl TlsHello {
     pub fn version_name(&self) -> &'static str {
-        match self.negotiated_version {
-            0x0300 => "SSL 3.0",
-            0x0301 => "TLS 1.0",
-            0x0302 => "TLS 1.1",
-            0x0303 => "TLS 1.2",
-            0x0304 => "TLS 1.3",
-            _ => "unknown",
-        }
+        version_name(self.negotiated_version)
     }
 
     /// Versions that should not be seen on a modern network.

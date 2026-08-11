@@ -628,6 +628,56 @@ mod tests {
         eth
     }
 
+    /// A PSH|ACK segment carrying `payload`, for exercising L7 decoding.
+    pub(crate) fn tcp_data(
+        src: [u8; 4],
+        sport: u16,
+        dst: [u8; 4],
+        dport: u16,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let mut t = Vec::new();
+        t.extend_from_slice(&sport.to_be_bytes());
+        t.extend_from_slice(&dport.to_be_bytes());
+        t.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 2]);
+        t.extend_from_slice(&[0x50, 0x18]);
+        t.extend_from_slice(&[0xff, 0xff, 0, 0, 0, 0]);
+        t.extend_from_slice(payload);
+
+        let total = (20 + t.len()) as u16;
+        let mut ip = vec![0x45, 0x00];
+        ip.extend_from_slice(&total.to_be_bytes());
+        ip.extend_from_slice(&[0, 1, 0x40, 0, 64, proto_num::TCP, 0, 0]);
+        ip.extend_from_slice(&src);
+        ip.extend_from_slice(&dst);
+        ip.extend_from_slice(&t);
+
+        let mut eth = vec![0; 12];
+        eth.extend_from_slice(&[0x08, 0x00]);
+        eth.extend_from_slice(&ip);
+        eth
+    }
+
+    /// A ServerHello selecting `version`, with no extensions — so the legacy
+    /// version field is the negotiated one.
+    pub(crate) fn tls_server_hello(version: u16) -> Vec<u8> {
+        let mut hs = version.to_be_bytes().to_vec();
+        hs.extend_from_slice(&[0x7a; 32]);
+        hs.push(0x00);
+        hs.extend_from_slice(&[0x00, 0x2f]);
+        hs.push(0x00);
+
+        let mut handshake = vec![0x02];
+        handshake.extend_from_slice(&(hs.len() as u32).to_be_bytes()[1..]);
+        handshake.extend_from_slice(&hs);
+
+        let mut record = vec![0x16];
+        record.extend_from_slice(&version.to_be_bytes());
+        record.extend_from_slice(&(handshake.len() as u16).to_be_bytes());
+        record.extend_from_slice(&handshake);
+        record
+    }
+
     #[test]
     fn empty_analyzer_is_reportable() {
         let a = Analyzer::default();

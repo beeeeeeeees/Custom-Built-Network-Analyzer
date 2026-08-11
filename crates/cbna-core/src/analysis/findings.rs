@@ -7,6 +7,7 @@
 use super::{unanswered_syn_count, Analyzer};
 use crate::net::is_private;
 use crate::proto::shannon_entropy;
+use crate::proto::tls::version_name as tls_version_name;
 use crate::time::{human_bytes, human_duration, human_percent};
 use crate::transport::is_cleartext_service;
 use serde::{Deserialize, Serialize};
@@ -380,11 +381,21 @@ fn obsolete_tls(a: &Analyzer, out: &mut Vec<Finding>) {
     if a.tls.obsolete_versions == 0 {
         return;
     }
+    // Only the flows that actually negotiated an obsolete version, and named
+    // whether or not they carried an SNI — an appliance with no SNI is exactly
+    // the kind of thing this finding exists to surface, and listing every TLS
+    // flow would send an analyst chasing modern connections.
     let evidence = a
         .flows
         .iter()
-        .filter(|f| f.protocols.contains("tls"))
-        .filter_map(|f| f.sni.as_ref().map(|s| format!("{} sni={s}", f.key)))
+        .filter(|f| f.tls_version.is_some_and(|v| matches!(v, 0x0300..=0x0302)))
+        .map(|f| {
+            let version = tls_version_name(f.tls_version.unwrap_or_default());
+            match &f.sni {
+                Some(s) => format!("{} {version} sni={s}", f.key),
+                None => format!("{} {version}", f.key),
+            }
+        })
         .take(12)
         .collect::<Vec<_>>();
 
@@ -539,6 +550,47 @@ mod tests {
             .expect("expected the tunnelling finding");
         assert_eq!(hit.severity, Severity::High);
         assert!(hit.evidence[0].contains("tunnel.example"));
+    }
+
+    #[test]
+    fn obsolete_tls_evidence_names_only_the_obsolete_flows() {
+        use crate::analysis::tests::{tcp_data, tls_server_hello};
+
+        // One legacy server and one modern one, both speaking TLS.
+        let old = tcp_data(
+            [10, 0, 0, 9],
+            443,
+            [10, 0, 0, 5],
+            51000,
+            &tls_server_hello(0x0301),
+        );
+        let new = tcp_data(
+            [10, 0, 0, 8],
+            443,
+            [10, 0, 0, 5],
+            51001,
+            &tls_server_hello(0x0303),
+        );
+        let mut a = Analyzer::default();
+        a.observe(&at(1, 1.0, &old));
+        a.observe(&at(2, 2.0, &new));
+
+        let findings = a.findings();
+        let hit = findings
+            .iter()
+            .find(|f| f.id == "obsolete-tls")
+            .expect("expected the obsolete-tls finding");
+
+        // The whole point: a modern flow must never appear as evidence for a
+        // deprecated-version finding, or the analyst chases the wrong host.
+        assert_eq!(hit.evidence.len(), 1, "evidence: {:?}", hit.evidence);
+        assert!(hit.evidence[0].contains("10.0.0.9"));
+        assert!(hit.evidence[0].contains("TLS 1.0"));
+        assert!(
+            !hit.evidence.iter().any(|e| e.contains("10.0.0.8")),
+            "the TLS 1.2 flow leaked into the evidence: {:?}",
+            hit.evidence
+        );
     }
 
     #[test]

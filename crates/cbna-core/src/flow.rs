@@ -160,6 +160,10 @@ pub struct Flow {
     pub protocols: BTreeSet<String>,
     pub sni: Option<String>,
     pub ja3: Option<String>,
+    /// Negotiated TLS version, as selected by the server when its hello was
+    /// captured. Findings about version quality must name the flows that
+    /// actually negotiated the version, not every flow that spoke TLS.
+    pub tls_version: Option<u16>,
     pub http_hosts: BTreeSet<String>,
     pub user_agents: BTreeSet<String>,
     pub dns_names: BTreeSet<String>,
@@ -188,6 +192,7 @@ impl Flow {
             protocols: BTreeSet::new(),
             sni: None,
             ja3: None,
+            tls_version: None,
             http_hosts: BTreeSet::new(),
             user_agents: BTreeSet::new(),
             dns_names: BTreeSet::new(),
@@ -356,6 +361,12 @@ impl Flow {
                 }
                 if self.ja3.is_none() && t.kind == crate::proto::TlsHelloKind::Client {
                     self.ja3 = Some(t.ja3_md5.clone());
+                }
+                // The server picks the version, so its hello is authoritative
+                // and overwrites the client's offer; a ClientHello only fills
+                // this in when the response was never captured.
+                if t.kind == crate::proto::TlsHelloKind::Server || self.tls_version.is_none() {
+                    self.tls_version = Some(t.negotiated_version);
                 }
             }
             AppLayer::None => {}

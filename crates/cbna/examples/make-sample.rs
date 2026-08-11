@@ -255,22 +255,123 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         arp_reply([192, 168, 1, 1], [0x00, 0x0c, 0x29, 0xde, 0xad, 0xbe]),
     ));
 
-    packets.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    // 8. A legacy appliance still negotiating TLS 1.0.
+    packets.push((
+        960.0,
+        tcp(&[192, 168, 1, 50], 47000, &[192, 168, 1, 40], 443, SYN, &[]),
+    ));
+    packets.push((
+        960.02,
+        tcp(
+            &[192, 168, 1, 40],
+            443,
+            &[192, 168, 1, 50],
+            47000,
+            SYN | ACK,
+            &[],
+        ),
+    ));
+    packets.push((
+        960.04,
+        tcp(
+            &[192, 168, 1, 50],
+            47000,
+            &[192, 168, 1, 40],
+            443,
+            PSH | ACK,
+            &client_hello("legacy-vpn.corp.local"),
+        ),
+    ));
+    packets.push((
+        960.08,
+        tcp(
+            &[192, 168, 1, 40],
+            443,
+            &[192, 168, 1, 50],
+            47000,
+            PSH | ACK,
+            // TLS_RSA_WITH_AES_128_CBC_SHA over TLS 1.0.
+            &server_hello(0x0301, 0x002f),
+        ),
+    ));
+    for i in 0..6 {
+        packets.push((
+            960.1 + i as f64 * 0.02,
+            tcp(
+                &[192, 168, 1, 40],
+                443,
+                &[192, 168, 1, 50],
+                47000,
+                PSH | ACK,
+                &[0x17; 512],
+            ),
+        ));
+    }
+
+    // 9. Capture-quality caveats: a fragmented datagram the tool will not
+    //    reassemble, and a burst that a short snaplen cut off mid-frame.
+    let mut udp_frag = Vec::new();
+    udp_frag.extend_from_slice(&40100u16.to_be_bytes());
+    udp_frag.extend_from_slice(&9000u16.to_be_bytes());
+    udp_frag.extend_from_slice(&1480u16.to_be_bytes());
+    udp_frag.extend_from_slice(&[0x00, 0x00]);
+    udp_frag.extend_from_slice(&[0x6b; 1472]);
+    packets.push((
+        970.0,
+        ipv4_frag(&[192, 168, 1, 50], &[198, 51, 100, 9], 17, udp_frag, MF),
+    ));
+    // Offset 1480 bytes = 185 eight-byte units, and no MF: the last fragment.
+    packets.push((
+        970.001,
+        ipv4_frag(
+            &[192, 168, 1, 50],
+            &[198, 51, 100, 9],
+            17,
+            vec![0x6b; 200],
+            185,
+        ),
+    ));
+
+    // Frames captured under a 96-byte snaplen: the wire length is honest, the
+    // captured bytes stop short. Everything else in this file is captured whole.
+    let mut clipped: Vec<(f64, Vec<u8>, u32)> = Vec::new();
+    for i in 0..8 {
+        let full = tcp(
+            &[93, 184, 216, 34],
+            443,
+            &[192, 168, 1, 50],
+            40000,
+            PSH | ACK,
+            &[0x17; 1400],
+        );
+        let wire_len = full.len() as u32;
+        clipped.push((980.0 + i as f64 * 0.01, full[..96].to_vec(), wire_len));
+    }
+
+    let mut all: Vec<(f64, Vec<u8>, u32)> = packets
+        .into_iter()
+        .map(|(at, frame)| {
+            let wire_len = frame.len() as u32;
+            (at, frame, wire_len)
+        })
+        .chain(clipped)
+        .collect();
+    all.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
     let mut writer = PcapWriter::create(&path, LinkType::Ethernet)?;
-    for (i, (offset, frame)) in packets.iter().enumerate() {
+    for (i, (offset, frame, wire_len)) in all.iter().enumerate() {
         let secs = BASE + offset.trunc() as i64;
         let nanos = (offset.fract() * 1e9) as u32;
         writer.write(&RawPacket::new(
             i as u64 + 1,
             Timestamp::new(secs, nanos),
-            frame.len() as u32,
+            *wire_len,
             frame.clone(),
         ))?;
     }
     writer.flush()?;
 
-    println!("Wrote {} packets to {path}", packets.len());
+    println!("Wrote {} packets to {path}", all.len());
     Ok(())
 }
 
@@ -289,10 +390,22 @@ fn ethernet(payload: Vec<u8>, ethertype: u16, src_last: u8) -> Vec<u8> {
 }
 
 fn ipv4(src: &[u8], dst: &[u8], protocol: u8, payload: Vec<u8>) -> Vec<u8> {
+    ipv4_frag(src, dst, protocol, payload, DF)
+}
+
+/// Flags-and-fragment-offset word: `DF` for the ordinary case, `MF` for a
+/// fragment with more to come, or a bare offset (in 8-byte units) for a
+/// continuation fragment, which carries no transport header at all.
+const DF: u16 = 0x4000;
+const MF: u16 = 0x2000;
+
+fn ipv4_frag(src: &[u8], dst: &[u8], protocol: u8, payload: Vec<u8>, flags_frag: u16) -> Vec<u8> {
     let total = (20 + payload.len()) as u16;
     let mut ip = vec![0x45, 0x00];
     ip.extend_from_slice(&total.to_be_bytes());
-    ip.extend_from_slice(&[0x00, 0x01, 0x40, 0x00, 0x40, protocol, 0x00, 0x00]);
+    ip.extend_from_slice(&[0x00, 0x01]); // identification, shared by fragments
+    ip.extend_from_slice(&flags_frag.to_be_bytes());
+    ip.extend_from_slice(&[0x40, protocol, 0x00, 0x00]);
     ip.extend_from_slice(src);
     ip.extend_from_slice(dst);
     ip.extend_from_slice(&payload);
@@ -360,6 +473,28 @@ fn arp_reply(ip: [u8; 4], mac: [u8; 6]) -> Vec<u8> {
     a.extend_from_slice(&[0x00, 0x50, 0x56, 0xc0, 0x00, 0x01]);
     a.extend_from_slice(&[192, 168, 1, 50]);
     ethernet(a, 0x0806, mac[5])
+}
+
+/// A ServerHello selecting `version` and one cipher, with no extensions — the
+/// shape a pre-TLS-1.3 server actually sends. Because there is no
+/// supported_versions extension to override it, the legacy version field is
+/// the negotiated version, which is what `obsolete-tls` keys on.
+fn server_hello(version: u16, cipher: u16) -> Vec<u8> {
+    let mut hs = version.to_be_bytes().to_vec();
+    hs.extend_from_slice(&[0x7a; 32]); // random
+    hs.push(0x00); // empty session id
+    hs.extend_from_slice(&cipher.to_be_bytes());
+    hs.push(0x00); // null compression
+
+    let mut handshake = vec![0x02];
+    handshake.extend_from_slice(&(hs.len() as u32).to_be_bytes()[1..]);
+    handshake.extend_from_slice(&hs);
+
+    let mut record = vec![0x16];
+    record.extend_from_slice(&version.to_be_bytes());
+    record.extend_from_slice(&(handshake.len() as u16).to_be_bytes());
+    record.extend_from_slice(&handshake);
+    record
 }
 
 /// A TLS 1.3 ClientHello carrying the given SNI, enough for JA3 extraction.
