@@ -103,6 +103,12 @@ time, so it will not start at all on a machine without it — which is exactly
 why the plain build exists. Verify a download against the release's
 `SHA256SUMS`.
 
+`cbna` is a command-line tool: double-clicking the executable runs it with no
+arguments, prints help and exits. The Windows archives include
+`cbna-dashboard.cmd`, which starts the dashboard and opens a browser at it —
+double-click that, or drag a capture file onto it. Everything else goes
+through a terminal.
+
 ## Build
 
 Requires Rust 1.85 or newer (clap 4.6 sets the floor).

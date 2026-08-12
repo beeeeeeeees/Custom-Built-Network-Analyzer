@@ -91,6 +91,12 @@ jobs:
           mkdir -p "dist/cbna-${{ matrix.name }}"
           cp "target/release/cbna${{ matrix.ext }}" "dist/cbna-${{ matrix.name }}/"
           cp README.md LICENSE "dist/cbna-${{ matrix.name }}/"
+          # Windows users reasonably expect to be able to double-click
+          # something. cbna is a CLI, so clicking the exe runs it with no
+          # arguments and exits — this launcher opens the dashboard instead.
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp scripts/cbna-dashboard.cmd "dist/cbna-${{ matrix.name }}/"
+          fi
 
       - name: Archive (zip)
         if: runner.os == 'Windows'
