@@ -109,6 +109,14 @@ pub struct DecodedPacket {
     /// with `&frame[payload_offset..][..payload_len]`, which is how the stream
     /// reassembler gets its input.
     pub payload_offset: usize,
+    /// For a fragmented IP datagram only, the `(offset, len)` of this fragment's
+    /// whole layer-3 payload within the frame — transport header plus data on
+    /// the first fragment, raw data on later ones. `None` for everything else.
+    ///
+    /// The IP reassembler needs the entire L3 payload placed at the fragment
+    /// offset, which is not what `payload_offset`/`payload_len` describe: those
+    /// point at the *transport* payload and are only set for the first fragment.
+    pub ip_payload: Option<(usize, usize)>,
     pub warnings: Vec<String>,
 }
 
@@ -119,6 +127,15 @@ impl DecodedPacket {
     pub fn payload<'a>(&self, frame: &'a [u8]) -> &'a [u8] {
         let end = self.payload_offset.saturating_add(self.payload_len);
         frame.get(self.payload_offset..end).unwrap_or(&[])
+    }
+
+    /// This fragment's whole layer-3 payload, recovered from its frame. Empty
+    /// unless the packet is a fragment (see [`DecodedPacket::ip_payload`]).
+    pub fn fragment_bytes<'a>(&self, frame: &'a [u8]) -> &'a [u8] {
+        match self.ip_payload {
+            Some((off, len)) => frame.get(off..off.saturating_add(len)).unwrap_or(&[]),
+            None => &[],
+        }
     }
 
     pub fn src_ip(&self) -> Option<IpAddr> {
@@ -245,6 +262,7 @@ pub fn decode(meta: PacketMeta, bytes: &[u8], link_type: LinkType) -> DecodedPac
         app: AppLayer::None,
         payload_len: 0,
         payload_offset: 0,
+        ip_payload: None,
         warnings: Vec::new(),
     };
 
@@ -321,9 +339,21 @@ fn decode_network(pkt: &mut DecodedPacket, ethertype: u16, l3: &[u8], frame: &[u
             Ok((ip, payload)) => {
                 let proto = ip.protocol;
                 let can_decode_transport = ip.has_transport_header();
+                let fragmented = ip.fragmented;
+                // Hand the reassembler this fragment's whole L3 payload; the
+                // transport-payload fields below describe only the first
+                // fragment's transport data, not the bytes to be reassembled.
+                if fragmented {
+                    pkt.ip_payload = Some((offset_in(frame, payload), payload.len()));
+                }
                 pkt.network = NetworkLayer::Ipv4(ip);
                 if can_decode_transport {
-                    decode_transport(pkt, proto, payload, frame);
+                    // The first fragment carries a transport header but only a
+                    // truncated transport payload, so decode the transport (for
+                    // ports and the flow) yet leave the application layer to the
+                    // reassembler, which sees the whole datagram. Decoding it
+                    // here too would index the message twice.
+                    decode_transport(pkt, proto, payload, frame, !fragmented);
                 } else {
                     pkt.payload_len = payload.len();
                 }
@@ -334,9 +364,13 @@ fn decode_network(pkt: &mut DecodedPacket, ethertype: u16, l3: &[u8], frame: &[u
             Ok((ip, payload)) => {
                 let proto = ip.next_header;
                 let can_decode_transport = ip.has_transport_header();
+                let fragmented = ip.fragmented;
+                if fragmented {
+                    pkt.ip_payload = Some((offset_in(frame, payload), payload.len()));
+                }
                 pkt.network = NetworkLayer::Ipv6(ip);
                 if can_decode_transport {
-                    decode_transport(pkt, proto, payload, frame);
+                    decode_transport(pkt, proto, payload, frame, !fragmented);
                 } else {
                     pkt.payload_len = payload.len();
                 }
@@ -358,7 +392,17 @@ fn offset_in(whole: &[u8], sub: &[u8]) -> usize {
     (sub.as_ptr() as usize).saturating_sub(whole.as_ptr() as usize)
 }
 
-fn decode_transport(pkt: &mut DecodedPacket, protocol: u8, l4: &[u8], frame: &[u8]) {
+/// Decode the transport header and, unless `decode_app_layer` is false, the
+/// application message on top of it. Fragments pass `false`: their transport
+/// payload is truncated, so only the reassembled datagram is worth decoding at
+/// L7.
+fn decode_transport(
+    pkt: &mut DecodedPacket,
+    protocol: u8,
+    l4: &[u8],
+    frame: &[u8],
+    decode_app_layer: bool,
+) {
     match protocol {
         proto_num::TCP => match transport::parse_tcp(l4) {
             Ok((tcp, payload)) => {
@@ -366,7 +410,9 @@ fn decode_transport(pkt: &mut DecodedPacket, protocol: u8, l4: &[u8], frame: &[u
                 pkt.transport = TransportLayer::Tcp(tcp);
                 pkt.payload_len = payload.len();
                 pkt.payload_offset = offset_in(frame, payload);
-                decode_app(pkt, ports, payload, true);
+                if decode_app_layer {
+                    decode_app(pkt, ports, payload, true);
+                }
             }
             Err(e) => pkt.warnings.push(Warning::from(e).0),
         },
@@ -376,7 +422,9 @@ fn decode_transport(pkt: &mut DecodedPacket, protocol: u8, l4: &[u8], frame: &[u
                 pkt.transport = TransportLayer::Udp(udp);
                 pkt.payload_len = payload.len();
                 pkt.payload_offset = offset_in(frame, payload);
-                decode_app(pkt, ports, payload, false);
+                if decode_app_layer {
+                    decode_app(pkt, ports, payload, false);
+                }
             }
             Err(e) => pkt.warnings.push(Warning::from(e).0),
         },
@@ -607,6 +655,26 @@ mod tests {
         assert!(matches!(pkt.network, NetworkLayer::Ipv4(_)));
         assert_eq!(pkt.transport, TransportLayer::None);
         assert!(!pkt.warnings.is_empty());
+    }
+
+    #[test]
+    fn fragment_exposes_l3_payload_others_do_not() {
+        // A non-fragmented UDP frame carries no fragment view.
+        let whole = udp_frame(51000, 53, &dns_query());
+        let pkt = decode(meta(), &whole, LinkType::Ethernet);
+        assert_eq!(pkt.ip_payload, None);
+        assert!(pkt.fragment_bytes(&whole).is_empty());
+
+        // Flip the IP flags word to MF; the L3 payload (UDP header + data) must
+        // now be recoverable in full for the reassembler.
+        let mut frag = whole.clone();
+        frag[14 + 6] = 0x20; // MF bit in the flags/frag-offset word
+        frag[14 + 7] = 0x00;
+        let pkt = decode(meta(), &frag, LinkType::Ethernet);
+        let (off, len) = pkt.ip_payload.expect("fragment should expose L3 payload");
+        assert_eq!(off, 14 + 20); // Ethernet + IPv4 header
+        assert_eq!(len, dns_query().len() + 8); // UDP header + DNS
+        assert_eq!(pkt.fragment_bytes(&frag), &frag[off..off + len]);
     }
 
     #[test]

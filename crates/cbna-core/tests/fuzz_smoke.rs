@@ -69,6 +69,20 @@ fn seeds() -> Vec<Vec<u8>> {
     v6.extend_from_slice(&[0x06, 0x00, 0, 0, 0, 0, 0, 0]);
     out.push(v6);
 
+    // Two IPv4 fragments of one UDP datagram, in the `ip_reassembly` script
+    // format (6-byte record header then payload): a first fragment with MF set,
+    // then the remainder with MF clear, so a datagram actually completes and the
+    // reassembled bytes reach the transport and application decoders.
+    let mut frags = Vec::new();
+    // record 1: id 1, offset 0, MF|v4, UDP, 16 payload bytes (UDP header + head)
+    frags.extend_from_slice(&[0x01, 0x00, 0x00, 0x01, 0x00, 0x10]);
+    frags.extend_from_slice(&[0x00, 0x35, 0x9c, 0x40, 0x00, 0x18, 0x00, 0x00]); // udp :53->:40000
+    frags.extend_from_slice(&[0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x00]); // dns header start
+                                                                                // record 2: id 1, offset 2 (16 bytes), MF clear, UDP, 8 payload bytes
+    frags.extend_from_slice(&[0x01, 0x00, 0x02, 0x00, 0x00, 0x08]);
+    frags.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x03, b'w', b'w', b'w']);
+    out.push(frags);
+
     // Degenerate inputs that have historically broken length arithmetic.
     out.push(Vec::new());
     out.push(vec![0x00]);
@@ -120,4 +134,9 @@ fn http_message_never_panics() {
 #[test]
 fn tcp_stream_never_panics() {
     run(fuzz::tcp_stream);
+}
+
+#[test]
+fn ip_reassembly_never_panics() {
+    run(fuzz::ip_reassembly);
 }

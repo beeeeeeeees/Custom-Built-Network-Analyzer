@@ -71,6 +71,7 @@ benign thing produces the same pattern — these are leads, not verdicts.
 | `outbound-upload-heavy` | medium | Internal host pushing far more out than it pulls back |
 | `obsolete-tls` | medium | SSL 3.0 / TLS 1.0 / TLS 1.1 negotiated |
 | `tcp-overlap-conflict` | medium | Segments claiming the same sequence range with different bytes — the classic inspection-evasion shape |
+| `ip-fragment-overlap` | medium | IP fragments claiming the same offset with different bytes — the teardrop / fragment-based evasion shape |
 | `cleartext-service` | low | Unencrypted protocols carrying real traffic |
 | `capture-quality` | info | Snaplen truncation, fragments, decode warnings — caveats on everything above |
 
@@ -154,8 +155,9 @@ a session ended by killing the process still leaves a complete, readable file.
 ## Try it without a capture
 
 A generator writes a synthetic pcap that trips all ten detectors — including a
-TLS 1.0 appliance, a fragmented datagram, and frames clipped by a short snaplen,
-so the capture-quality caveats appear too:
+TLS 1.0 appliance, a DNS response split across IP fragments, an overlapping
+fragment pair, and frames clipped by a short snaplen, so the reassembly path and
+the capture-quality caveats are exercised too:
 
 ```powershell
 cargo run -p cbna --example make-sample -- samples/demo.pcap
@@ -218,8 +220,13 @@ seconds of a live run.
   by sequence number. The buffer is released as soon as a message parses or the
   cap is hit — this is not a general-purpose TCP stack, and nothing here needs
   segment forty thousand. Bodies are not reassembled.
-- **IP fragments are counted and flagged, not reassembled.** Later fragments
-  contribute bytes but no transport detail.
+- **IP fragments are reassembled.** Fragments of one datagram are rebuilt in
+  offset order and the whole datagram is re-decoded, so a fragmented
+  DNS response or ICMP payload still yields transport and application detail.
+  Overlapping fragments are resolved first-writer-wins, and a disagreeing
+  overlap is flagged as `ip-fragment-overlap`. The reassembly table is bounded
+  the same way the TCP one is: capped per datagram, capped in total, and
+  released the moment a datagram completes.
 - **Memory is bounded.** Per-flow timestamp samples, DNS name sets, and header
   values are all capped, so a hostile or very long capture cannot grow the
   process without limit. Truncation is reported in the findings.
@@ -236,17 +243,18 @@ resolutions, and flow direction resolution.
 ### Fuzzing
 
 The parsers are the reason this project hand-rolls its decoders, so they get
-fuzzed rather than only unit-tested. `fuzz/` holds six [cargo-fuzz][cf] targets:
-frame decode across every link type, DNS, TLS, HTTP, whole capture files, and
-the TCP stream reassembler.
+fuzzed rather than only unit-tested. `fuzz/` holds seven [cargo-fuzz][cf]
+targets: frame decode across every link type, DNS, TLS, HTTP, whole capture
+files, the TCP stream reassembler, and the IP fragment reassembler.
 
 ```bash
 cargo install cargo-fuzz          # needs a nightly toolchain
 cargo fuzz run capture_file       # or decode_frame / dns_message / tls_hello / http_message
 ```
 
-`tcp_stream` is worth attention too: it is the only stateful decoder, and the
-state is indexed by sequence numbers an attacker chooses.
+`tcp_stream` and `ip_reassembly` are worth attention too: they are the two
+stateful decoders, and their state is indexed by sequence numbers and fragment
+offsets an attacker chooses.
 
 `capture_file` is the one to run longest. It parses a pcap/pcapng straight out
 of memory and feeds every packet the reader yields into the decoder, so a length

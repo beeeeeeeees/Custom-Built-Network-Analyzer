@@ -55,3 +55,9 @@ name = "tcp_stream"
 path = "fuzz_targets/tcp_stream.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "ip_reassembly"
+path = "fuzz_targets/ip_reassembly.rs"
+test = false
+doc = false

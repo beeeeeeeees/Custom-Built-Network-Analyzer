@@ -138,6 +138,10 @@ pub struct Ipv6 {
     pub extension_headers: u8,
     pub fragmented: bool,
     pub fragment_offset: u16,
+    /// Fragment identification, from the fragment extension header. Zero when
+    /// the datagram is not fragmented.
+    pub identification: u32,
+    pub more_fragments: bool,
 }
 
 impl Ipv6 {
@@ -169,6 +173,8 @@ pub fn parse_ipv6(buf: &[u8]) -> Result<(Ipv6, &[u8])> {
     let mut extension_headers = 0u8;
     let mut fragmented = false;
     let mut fragment_offset = 0u16;
+    let mut identification = 0u32;
+    let mut more_fragments = false;
 
     // Bounded walk: a crafted chain of zero-length options must not loop.
     for _ in 0..16 {
@@ -184,9 +190,10 @@ pub fn parse_ipv6(buf: &[u8]) -> Result<(Ipv6, &[u8])> {
                 let nh = r.u8()?;
                 r.skip(1)?;
                 let off_flags = r.be_u16()?;
-                r.skip(4)?; // identification
+                identification = r.be_u32()?;
                 fragmented = true;
                 fragment_offset = (off_flags >> 3) * 8;
+                more_fragments = off_flags & 0x0001 != 0;
                 next_header = nh;
                 extension_headers += 1;
                 if fragment_offset > 0 {
@@ -216,6 +223,8 @@ pub fn parse_ipv6(buf: &[u8]) -> Result<(Ipv6, &[u8])> {
         extension_headers,
         fragmented,
         fragment_offset,
+        identification,
+        more_fragments,
     };
     Ok((header, r.rest()))
 }
@@ -401,6 +410,32 @@ mod tests {
         assert_eq!(ip6.extension_headers, 1);
         assert_eq!(ip6.hop_limit, 64);
         assert_eq!(payload, &[0xaa; 8]);
+    }
+
+    #[test]
+    fn ipv6_fragment_header_exposes_id_and_more_flag() {
+        // Base IPv6 header with next_header = Fragment, then an 8-byte fragment
+        // extension header: first fragment (offset 0), MF set, id 0xdeadbeef.
+        let mut b = vec![0x60, 0x00, 0x00, 0x00];
+        b.extend_from_slice(&[0x00, 0x10]); // payload len
+        b.push(proto_num::IPV6_FRAG);
+        b.push(64); // hop limit
+        b.extend_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        b.extend_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        // fragment header: next=UDP, reserved, offset 0 with M=1, id 0xdeadbeef
+        b.push(proto_num::UDP);
+        b.push(0);
+        b.extend_from_slice(&0x0001u16.to_be_bytes()); // offset 0, M=1
+        b.extend_from_slice(&0xdeadbeefu32.to_be_bytes());
+        b.extend_from_slice(&[0xaa; 8]);
+
+        let (ip6, _) = parse_ipv6(&b).unwrap();
+        assert!(ip6.fragmented);
+        assert!(ip6.more_fragments);
+        assert_eq!(ip6.fragment_offset, 0);
+        assert_eq!(ip6.identification, 0xdead_beef);
+        assert!(ip6.has_transport_header());
+        assert_eq!(ip6.next_header, proto_num::UDP);
     }
 
     #[test]
