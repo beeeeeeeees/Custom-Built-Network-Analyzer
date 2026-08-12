@@ -367,28 +367,60 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ));
     }
 
-    // 9. Capture-quality caveats: a fragmented datagram the tool will not
-    //    reassemble, and a burst that a short snaplen cut off mid-frame.
-    let mut udp_frag = Vec::new();
-    udp_frag.extend_from_slice(&40100u16.to_be_bytes());
-    udp_frag.extend_from_slice(&9000u16.to_be_bytes());
-    udp_frag.extend_from_slice(&1480u16.to_be_bytes());
-    udp_frag.extend_from_slice(&[0x00, 0x00]);
-    udp_frag.extend_from_slice(&[0x6b; 1472]);
+    // 9. A fragmented DNS-over-UDP response, split across two IP fragments that
+    //    share an id. Neither fragment decodes on its own — the first carries a
+    //    truncated answer section, the second no transport header at all — but
+    //    the reassembler rebuilds the datagram and recovers the whole response.
+    let server = [198, 51, 100, 9];
+    let client = [192, 168, 1, 50];
+    let mut dns = Vec::new();
+    dns.extend_from_slice(&0x2a2au16.to_be_bytes());
+    // response, 1 question, 8 answers
+    dns.extend_from_slice(&[0x81, 0x80, 0x00, 0x01, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00]);
+    dns.extend_from_slice(&encode_name("files.example.net"));
+    dns.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]);
+    for i in 0..8u8 {
+        dns.extend_from_slice(&[0xc0, 0x0c]); // pointer to the question name
+        dns.extend_from_slice(&[0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x2c, 0x00, 0x04]);
+        dns.extend_from_slice(&[203, 0, 113, i]);
+    }
+    // UDP header (server :53 -> client :53124) plus the DNS payload.
+    let mut l3 = Vec::new();
+    l3.extend_from_slice(&53u16.to_be_bytes());
+    l3.extend_from_slice(&53124u16.to_be_bytes());
+    l3.extend_from_slice(&((dns.len() + 8) as u16).to_be_bytes());
+    l3.extend_from_slice(&[0x00, 0x00]);
+    l3.extend_from_slice(&dns);
+    let split = 40; // an eight-byte boundary; the first fragment holds the UDP header
     packets.push((
         970.0,
-        ipv4_frag(&[192, 168, 1, 50], &[198, 51, 100, 9], 17, udp_frag, MF),
+        ipv4_frag(&server, &client, 17, l3[..split].to_vec(), 0x2b2b, MF),
     ));
-    // Offset 1480 bytes = 185 eight-byte units, and no MF: the last fragment.
     packets.push((
         970.001,
         ipv4_frag(
-            &[192, 168, 1, 50],
-            &[198, 51, 100, 9],
+            &server,
+            &client,
             17,
-            vec![0x6b; 200],
-            185,
+            l3[split..].to_vec(),
+            0x2b2b,
+            (split / 8) as u16,
         ),
+    ));
+
+    // 9b. Overlapping fragments that disagree — the teardrop / fragment-overlap
+    //     evasion shape. Two fragments of one datagram claim the same bytes with
+    //     different content; the reassembler keeps the first and flags the
+    //     conflict as `ip-fragment-overlap`.
+    packets.push((
+        971.0,
+        ipv4_frag(&server, &client, 17, vec![0xaa; 32], 0x2c2c, MF),
+    ));
+    // Offset 16 bytes (2 eight-byte units), MF still set: overlaps [16,32) with
+    // bytes that differ from the first fragment.
+    packets.push((
+        971.001,
+        ipv4_frag(&server, &client, 17, vec![0xbb; 32], 0x2c2c, MF | 2),
     ));
 
     // Frames captured under a 96-byte snaplen: the wire length is honest, the
@@ -449,7 +481,7 @@ fn ethernet(payload: Vec<u8>, ethertype: u16, src_last: u8) -> Vec<u8> {
 }
 
 fn ipv4(src: &[u8], dst: &[u8], protocol: u8, payload: Vec<u8>) -> Vec<u8> {
-    ipv4_frag(src, dst, protocol, payload, DF)
+    ipv4_frag(src, dst, protocol, payload, 0x0001, DF)
 }
 
 /// Flags-and-fragment-offset word: `DF` for the ordinary case, `MF` for a
@@ -458,11 +490,21 @@ fn ipv4(src: &[u8], dst: &[u8], protocol: u8, payload: Vec<u8>) -> Vec<u8> {
 const DF: u16 = 0x4000;
 const MF: u16 = 0x2000;
 
-fn ipv4_frag(src: &[u8], dst: &[u8], protocol: u8, payload: Vec<u8>, flags_frag: u16) -> Vec<u8> {
+/// `id` is the fragment identification shared by every fragment of one datagram
+/// (and irrelevant for whole datagrams). `flags_frag` is the flags-and-offset
+/// word (see [`DF`] / [`MF`]).
+fn ipv4_frag(
+    src: &[u8],
+    dst: &[u8],
+    protocol: u8,
+    payload: Vec<u8>,
+    id: u16,
+    flags_frag: u16,
+) -> Vec<u8> {
     let total = (20 + payload.len()) as u16;
     let mut ip = vec![0x45, 0x00];
     ip.extend_from_slice(&total.to_be_bytes());
-    ip.extend_from_slice(&[0x00, 0x01]); // identification, shared by fragments
+    ip.extend_from_slice(&id.to_be_bytes());
     ip.extend_from_slice(&flags_frag.to_be_bytes());
     ip.extend_from_slice(&[0x40, protocol, 0x00, 0x00]);
     ip.extend_from_slice(src);

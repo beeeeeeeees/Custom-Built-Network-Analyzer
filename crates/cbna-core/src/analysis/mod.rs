@@ -11,6 +11,7 @@ pub use report::{
 };
 
 use crate::flow::FlowTable;
+use crate::ip_reassembly::IpReassembler;
 use crate::link::{ArpOp, MacAddr};
 use crate::net::proto_num;
 use crate::packet::{AppLayer, DecodedPacket, NetworkLayer, TransportLayer};
@@ -156,6 +157,9 @@ pub struct Analyzer {
     /// Rebuilds the head of each TCP direction so application messages split
     /// across segments are still decoded.
     pub reassembly: Reassembler,
+    /// Rebuilds IP datagrams from their fragments so the transport and
+    /// application layers of a fragmented datagram are still decoded.
+    pub ip_reassembly: IpReassembler,
 }
 
 impl Default for Analyzer {
@@ -177,6 +181,7 @@ impl Analyzer {
             hosts: HashMap::new(),
             timeline: BTreeMap::new(),
             reassembly: Reassembler::new(),
+            ip_reassembly: IpReassembler::new(),
         }
     }
 
@@ -200,6 +205,18 @@ impl Analyzer {
             self.index_app(&app, pkt);
             if let Some((key, _)) = crate::flow::FlowKey::from_packet(pkt) {
                 self.flows.record_app(&key, &app);
+            }
+        }
+
+        // A datagram just reassembled from its IP fragments carries a transport
+        // and application layer single-fragment decoding could not see. Index
+        // that application message and attach it to the flow — but do not
+        // re-count packets, bytes, or hosts: the fragments were already counted,
+        // and the flow already exists from the first fragment's ports.
+        if let Some(reassembled) = self.ip_reassembly.push(pkt, frame) {
+            self.index_app(&reassembled.app, &reassembled);
+            if let Some((key, _)) = crate::flow::FlowKey::from_packet(&reassembled) {
+                self.flows.record_app(&key, &reassembled.app);
             }
         }
     }
@@ -720,6 +737,62 @@ mod tests {
         record.extend_from_slice(&(handshake.len() as u16).to_be_bytes());
         record.extend_from_slice(&handshake);
         record
+    }
+
+    /// One IPv4 fragment: `l3` placed at `offset_bytes`, MF as given, sharing
+    /// identification `id`. Fragments of one datagram share src/dst/proto/id.
+    fn ipv4_fragment(id: u16, offset_bytes: u16, mf: bool, l3: &[u8]) -> Vec<u8> {
+        let flags_frag = (offset_bytes / 8) | if mf { 0x2000 } else { 0 };
+        let total = (20 + l3.len()) as u16;
+        let mut ip = vec![0x45, 0x00];
+        ip.extend_from_slice(&total.to_be_bytes());
+        ip.extend_from_slice(&id.to_be_bytes());
+        ip.extend_from_slice(&flags_frag.to_be_bytes());
+        ip.extend_from_slice(&[0x40, proto_num::UDP, 0, 0]);
+        ip.extend_from_slice(&[10, 0, 0, 1]); // DNS server
+        ip.extend_from_slice(&[10, 0, 0, 5]);
+        ip.extend_from_slice(l3);
+        let mut eth = vec![0; 12];
+        eth.extend_from_slice(&[0x08, 0x00]);
+        eth.extend_from_slice(&ip);
+        eth
+    }
+
+    #[test]
+    fn fragmented_dns_response_is_reassembled_and_indexed() {
+        // A DNS response over UDP (server :53), large enough to fragment.
+        let mut dns = vec![
+            0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+        ];
+        for label in "split.example.com".split('.') {
+            dns.push(label.len() as u8);
+            dns.extend_from_slice(label.as_bytes());
+        }
+        dns.push(0);
+        dns.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]); // A, IN
+        dns.extend_from_slice(&[0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01]);
+        dns.extend_from_slice(&[0x00, 0x00, 0x01, 0x2c, 0x00, 0x04, 93, 184, 216, 34]);
+
+        let mut l3 = vec![0x00, 0x35, 0x9c, 0x40]; // UDP :53 -> :40000
+        l3.extend_from_slice(&((dns.len() + 8) as u16).to_be_bytes());
+        l3.extend_from_slice(&[0x00, 0x00]);
+        l3.extend_from_slice(&dns);
+
+        let split = 16; // multiple of 8
+        let f0 = ipv4_fragment(0x4a4a, 0, true, &l3[..split]);
+        let f1 = ipv4_fragment(0x4a4a, split as u16, false, &l3[split..]);
+
+        let mut a = Analyzer::default();
+        a.observe(&at(1, 1.0, &f0), &f0);
+        a.observe(&at(2, 1.0, &f1), &f1);
+
+        // The name only appears if the fragmented response was rebuilt and its
+        // decoded DNS message indexed.
+        assert_eq!(a.ip_reassembly.stats().reassembled, 1);
+        assert_eq!(a.dns.names["split.example.com"].responses, 1);
+        // Both fragments were still counted as ordinary packets.
+        assert_eq!(a.counters.packets, 2);
+        assert_eq!(a.counters.fragments, 2);
     }
 
     #[test]

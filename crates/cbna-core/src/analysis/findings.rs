@@ -81,6 +81,7 @@ pub(super) fn collect(a: &Analyzer) -> Vec<Finding> {
     cleartext_services(a, &mut out);
     obsolete_tls(a, &mut out);
     overlapping_segments(a, &mut out);
+    fragment_overlap(a, &mut out);
     arp_conflicts(a, &mut out);
     capture_quality(a, &mut out);
 
@@ -446,6 +447,37 @@ fn overlapping_segments(a: &Analyzer, out: &mut Vec<Finding>) {
     );
 }
 
+/// Two IP fragments claiming the same offset with different bytes.
+///
+/// The layer-3 twin of `tcp-overlap-conflict`: teardrop and the fragment-based
+/// IDS-evasion family send overlapping fragments so a monitor reassembling one
+/// way and the destination host another end up with different datagrams. The
+/// dull causes are the same — a broken fragmenting router, or a capture that
+/// merged two taps — so this is a lead, not a verdict.
+fn fragment_overlap(a: &Analyzer, out: &mut Vec<Finding>) {
+    let n = a.ip_reassembly.stats().conflicting_overlaps;
+    if n == 0 {
+        return;
+    }
+    out.push(
+        Finding::new(
+            "ip-fragment-overlap",
+            Severity::Medium,
+            format!("{n} IP fragment(s) overlapped earlier data with different bytes"),
+            "Fragments of one datagram should not disagree about the same bytes. When \
+             they do, a monitor and the destination host can reassemble different \
+             datagrams from the same fragments — the teardrop / fragment-overlap evasion. \
+             A misbehaving fragmenting router or a capture that merges more than one tap \
+             produces it too; check the capture topology before escalating.",
+        )
+        .with(vec![format!(
+            "{n} conflicting fragment overlap(s) across {} tracked datagram(s); \
+             first writer was kept",
+            a.ip_reassembly.tracked()
+        )]),
+    );
+}
+
 fn arp_conflicts(a: &Analyzer, out: &mut Vec<Finding>) {
     let conflicts: Vec<String> = a
         .arp
@@ -497,11 +529,20 @@ fn capture_quality(a: &Analyzer, out: &mut Vec<Finding>) {
             c.decode_warnings
         ));
     }
+    let ipre = a.ip_reassembly.stats();
     if c.fragments > 0 {
         notes.push(format!(
-            "{} IP fragment(s) seen; this tool does not reassemble, so later \
-             fragments contribute bytes but no transport detail",
-            c.fragments
+            "{} IP fragment(s) seen; {} datagram(s) were reassembled from them and \
+             re-decoded, recovering transport and application detail single fragments \
+             could not carry",
+            c.fragments, ipre.reassembled
+        ));
+    }
+    if ipre.dropped_datagrams > 0 {
+        notes.push(format!(
+            "{} fragmented datagram(s) went untracked because the reassembly table \
+             was full, so their later fragments were not rebuilt",
+            ipre.dropped_datagrams
         ));
     }
     let re = a.reassembly.stats();

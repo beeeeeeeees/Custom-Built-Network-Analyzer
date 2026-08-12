@@ -246,6 +246,111 @@ fn tcp_frame(sport: u16, seq: u32, flags: u8, payload: &[u8]) -> Vec<u8> {
     eth
 }
 
+/// The IP fragment reassembler, driven by a script of fragments the input
+/// controls.
+///
+/// The second stateful decoder, and the second place an attacker chooses the
+/// offsets that index a write buffer: fragments that overlap, that start past
+/// the datagram cap, that claim a datagram is finished while holes remain, and
+/// a flood of distinct ids racing the tracking cap. The arithmetic that places
+/// those bytes is where an out-of-bounds write would live.
+pub fn ip_reassembly(data: &[u8]) {
+    use crate::ip_reassembly::IpReassembler;
+
+    /// Records are 6 bytes of header then payload; stop well before a large
+    /// input turns one iteration into a long run.
+    const MAX_FRAGMENTS: usize = 512;
+
+    let mut r = IpReassembler::new();
+    let mut cur = data;
+    let mut n = 0;
+
+    while cur.len() >= 6 && n < MAX_FRAGMENTS {
+        // A small id space so fragments actually meet and datagrams complete.
+        let id = cur[0] as u32;
+        // 13-bit fragment offset in 8-octet units, exactly as the wire encodes.
+        let offset_units = u16::from_be_bytes([cur[1], cur[2]]) & 0x1FFF;
+        let mf = cur[3] & 0x01 != 0;
+        let v6 = cur[3] & 0x02 != 0;
+        let proto = match cur[4] % 4 {
+            0 => 17u8, // UDP
+            1 => 6,    // TCP
+            2 => 1,    // ICMP
+            _ => 58,   // ICMPv6
+        };
+        let len = cur[5] as usize;
+        cur = &cur[6..];
+
+        let take = len.min(cur.len());
+        let (payload, rest) = cur.split_at(take);
+        cur = rest;
+
+        let frame = ip_frag_frame(v6, id, proto, offset_units, mf, payload);
+        let meta = PacketMeta {
+            index: n as u64,
+            timestamp: Timestamp::new(0, 0),
+            captured_len: frame.len() as u32,
+            wire_len: frame.len() as u32,
+        };
+        let pkt = decode(meta, &frame, LinkType::Ethernet);
+        black_box(r.push(&pkt, &frame).is_some());
+        n += 1;
+    }
+
+    let stats = r.stats();
+    black_box(stats.reassembled);
+    black_box(stats.dropped_datagrams);
+    black_box(stats.conflicting_overlaps);
+}
+
+/// Ethernet + a single IP fragment (v4 or v6) carrying `payload` at
+/// `offset_units` (8-octet units), sharing datagram id `id`.
+fn ip_frag_frame(
+    v6: bool,
+    id: u32,
+    proto: u8,
+    offset_units: u16,
+    mf: bool,
+    payload: &[u8],
+) -> Vec<u8> {
+    if v6 {
+        let off_flags = (offset_units << 3) | if mf { 1 } else { 0 };
+        let payload_len = (8 + payload.len()) as u16;
+        let mut ip = vec![0x60, 0x00, 0x00, 0x00];
+        ip.extend_from_slice(&payload_len.to_be_bytes());
+        ip.push(44); // next header: fragment
+        ip.push(64);
+        ip.extend_from_slice(&[0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        ip.extend_from_slice(&[0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        ip.push(proto);
+        ip.push(0);
+        ip.extend_from_slice(&off_flags.to_be_bytes());
+        ip.extend_from_slice(&id.to_be_bytes());
+        ip.extend_from_slice(payload);
+
+        let mut eth = vec![0u8; 12];
+        eth.extend_from_slice(&[0x86, 0xdd]);
+        eth.extend_from_slice(&ip);
+        eth
+    } else {
+        let flags_frag = offset_units | if mf { 0x2000 } else { 0 };
+        let total = (20 + payload.len()) as u16;
+        let mut ip = vec![0x45, 0x00];
+        ip.extend_from_slice(&total.to_be_bytes());
+        ip.extend_from_slice(&(id as u16).to_be_bytes());
+        ip.extend_from_slice(&flags_frag.to_be_bytes());
+        ip.extend_from_slice(&[0x40, proto, 0, 0]);
+        ip.extend_from_slice(&[10, 0, 0, 1]);
+        ip.extend_from_slice(&[10, 0, 0, 2]);
+        ip.extend_from_slice(payload);
+
+        let mut eth = vec![0u8; 12];
+        eth.extend_from_slice(&[0x08, 0x00]);
+        eth.extend_from_slice(&ip);
+        eth
+    }
+}
+
 /// Text protocols fail differently from binary ones: unbounded header counts,
 /// enormous single values, header lines that never terminate.
 pub fn http_message(data: &[u8]) {

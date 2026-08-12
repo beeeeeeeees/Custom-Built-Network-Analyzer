@@ -66,10 +66,32 @@ across segments is still decoded. Things to know before touching it:
   the later segment win — which side wins is the entire substance of the
   evasion, and silently picking one hides it.
 
+## IP reassembly
+
+`ip_reassembly.rs` rebuilds fragmented IP datagrams (v4 and v6) and re-decodes
+their transport and application layers. It is the sibling of `reassembly.rs` and
+follows the same rules. Things to know before touching it:
+
+- **The single-fragment app layer is deliberately skipped.** `decode` decodes a
+  first fragment's transport (for ports and the flow) but *not* its application
+  layer — that payload is truncated. Only the reassembled datagram is decoded at
+  L7, or the recovered message would be indexed twice. See the `!fragmented`
+  argument threaded into `decode_transport`.
+- **Reassembly needs the first fragment.** Without the offset-0 fragment there
+  is no transport header, so a datagram missing its head never completes and is
+  dropped by the caps rather than half-decoded.
+- **The same four-cap discipline holds** — bytes per datagram, datagrams
+  tracked, ranges per datagram, and eager release on completion. Add a cap to
+  anything new that grows per fragment.
+- **Overlaps are first-writer-wins**, and a disagreeing overlap is counted and
+  reported as `ip-fragment-overlap`. As with TCP overlaps, do not "fix" this by
+  letting the later fragment win — which side wins is the substance of the
+  evasion.
+
 ## Fuzzing
 
-Six targets: frame decode, DNS, TLS, HTTP, capture files, and the stream
-reassembler.
+Seven targets: frame decode, DNS, TLS, HTTP, capture files, the TCP stream
+reassembler, and the IP fragment reassembler.
 
 Their bodies live in `cbna_core::fuzz` and `cbna_capture::fuzz`, **not** in
 `fuzz/fuzz_targets/*.rs`. Those files are six-line wrappers on purpose: the same
