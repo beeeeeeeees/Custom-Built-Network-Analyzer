@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Monday 04:17 UTC. The scheduled run fuzzes for much longer than a push
+    # can justify — that is the run expected to actually find something.
+    - cron: "17 4 * * 1"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt, clippy, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  live:
+    # The live-capture code is behind a feature flag, so a plain build never
+    # compiles it. CLAUDE.md calls this out as the thing a normal `cargo check`
+    # silently skips; this job is what stops that from rotting.
+    name: live feature
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install libpcap
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+      - name: Clippy with live capture enabled
+        # `.cargo/config.toml` points LIBPCAP_LIBDIR at the vendored Windows
+        # Npcap SDK. Override it here so the linker uses the system libpcap
+        # rather than searching a directory that only exists on the dev box.
+        env:
+          LIBPCAP_LIBDIR: /usr/lib/x86_64-linux-gnu
+        run: cargo clippy -p cbna --features live --all-targets -- -D warnings
+
+  windows:
+    # The primary development platform, and the only one where the pcap path
+    # and the CRLF checkout differ enough to break something the Linux jobs
+    # would pass.
+    name: test on windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+
+  fuzz:
+    name: fuzz
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            fuzz
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Build every target
+        # Cheap, and it is what catches a target drifting out of sync with the
+        # entry points in `cbna_core::fuzz`.
+        run: cargo fuzz build
+      - name: Fuzz
+        # A short run on every push proves the targets actually execute, which
+        # a build alone does not. The weekly schedule is where real time goes.
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            SECONDS_PER_TARGET=600
+          else
+            SECONDS_PER_TARGET=30
+          fi
+          for target in decode_frame dns_message tls_hello http_message capture_file tcp_stream; do
+            echo "::group::$target"
+            cargo fuzz run "$target" -- \
+              -max_total_time=$SECONDS_PER_TARGET \
+              -rss_limit_mb=4096
+            echo "::endgroup::"
+          done
+      - name: Upload crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore

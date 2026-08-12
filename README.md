@@ -86,7 +86,7 @@ low-numbered address as inbound, and invert every upload ratio.
 
 ## Build
 
-Requires Rust 1.82 or newer.
+Requires Rust 1.85 or newer (clap 4.6 sets the floor).
 
 ```powershell
 cargo build --release
