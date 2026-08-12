@@ -1,5 +1,7 @@
 # Custom Built Network Analyzer (`cbna`)
 
+[![CI](https://github.com/beeeeeeeees/Custom-Built-Network-Analyzer/actions/workflows/ci.yml/badge.svg)](https://github.com/beeeeeeeees/Custom-Built-Network-Analyzer/actions/workflows/ci.yml)
+
 A network traffic analyzer written from the packet bytes up in Rust. It reads
 pcap/pcapng files or captures live off an interface, decodes L2 through L7 with
 hand-written parsers, tracks bidirectional flows, and applies detection
