@@ -140,6 +140,14 @@ impl Source for LiveSource {
             match self.capture.next_packet() {
                 Ok(packet) => {
                     self.index += 1;
+                    // `timeval` is not the same shape everywhere: `tv_sec` is
+                    // i32 on Windows and i64 on 64-bit Linux, and `tv_usec`
+                    // differs in signedness too. The casts are load-bearing on
+                    // one platform and redundant on the other, so neither
+                    // spelling is clean everywhere — hence the allow rather
+                    // than a cleverer conversion, which would only move the
+                    // lint (`useless_conversion` instead of `unnecessary_cast`).
+                    #[allow(clippy::unnecessary_cast)]
                     let ts = Timestamp::from_micros(
                         packet.header.ts.tv_sec as i64,
                         packet.header.ts.tv_usec as u32,
