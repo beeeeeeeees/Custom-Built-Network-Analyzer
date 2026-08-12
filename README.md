@@ -86,6 +86,23 @@ often start mid-conversation — the well-known or lower port is taken as the
 service. Getting this wrong would label every outbound connection to a
 low-numbered address as inbound, and invert every upload ratio.
 
+## Install
+
+Prebuilt binaries for Windows and Linux are attached to each
+[release](https://github.com/beeeeeeeees/Custom-Built-Network-Analyzer/releases).
+Two variants per platform, because live capture is not free to enable:
+
+| Archive | Live capture | Runtime requirement |
+| --- | --- | --- |
+| `cbna-<platform>-x86_64` | no | none |
+| `cbna-<platform>-x86_64-live` | yes | Npcap (Windows) or libpcap (Linux) |
+
+The plain build reads capture files and serves the dashboard, and tells you
+what to do if you ask it to capture. The `-live` build links libpcap at load
+time, so it will not start at all on a machine without it — which is exactly
+why the plain build exists. Verify a download against the release's
+`SHA256SUMS`.
+
 ## Build
 
 Requires Rust 1.85 or newer (clap 4.6 sets the floor).

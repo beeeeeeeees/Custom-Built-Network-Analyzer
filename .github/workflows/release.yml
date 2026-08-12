@@ -1,0 +1,161 @@
+name: Release
+
+# Tag a commit to cut a release:
+#
+#     git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
+#
+# workflow_dispatch builds the same artifacts without publishing anything, so
+# the packaging can be checked before a tag is spent.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Two builds per platform, because the live-capture feature is not
+          # free to enable. Linking libpcap/wpcap makes the library a load-time
+          # dependency: a live-enabled binary will not start at all on a machine
+          # without it, not even to read a pcap off disk. The plain build is the
+          # one that runs anywhere; the live build is for actually capturing.
+          - name: windows-x86_64
+            os: windows-latest
+            live: false
+            ext: ".exe"
+          - name: windows-x86_64-live
+            os: windows-latest
+            live: true
+            ext: ".exe"
+          - name: linux-x86_64
+            os: ubuntu-latest
+            live: false
+            ext: ""
+          - name: linux-x86_64-live
+            os: ubuntu-latest
+            live: true
+            ext: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+
+      - name: Fetch the Npcap SDK
+        if: matrix.live && runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/fetch-npcap-sdk.ps1
+
+      - name: Install libpcap
+        if: matrix.live && runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
+      - name: Build
+        shell: bash
+        env:
+          # Overrides the vendored Windows SDK path from .cargo/config.toml.
+          # Ignored on Windows, where that path is the correct one.
+          LIBPCAP_LIBDIR: ${{ runner.os == 'Linux' && '/usr/lib/x86_64-linux-gnu' || '' }}
+        run: |
+          if [ "${{ matrix.live }}" = "true" ]; then
+            cargo build --release --locked -p cbna --features live
+          else
+            cargo build --release --locked -p cbna
+          fi
+
+      - name: Smoke-test the binary
+        shell: bash
+        run: |
+          # A binary that cannot run is not a release artifact. This also
+          # catches the load-time libpcap dependency on the live builds.
+          ./target/release/cbna${{ matrix.ext }} --version
+          ./target/release/cbna${{ matrix.ext }} --help > /dev/null
+          cargo run --release --locked -p cbna --example make-sample -- sample.pcap
+          ./target/release/cbna${{ matrix.ext }} analyze sample.pcap --findings-only --plain
+
+      - name: Stage the package
+        shell: bash
+        run: |
+          mkdir -p "dist/cbna-${{ matrix.name }}"
+          cp "target/release/cbna${{ matrix.ext }}" "dist/cbna-${{ matrix.name }}/"
+          cp README.md LICENSE "dist/cbna-${{ matrix.name }}/"
+
+      - name: Archive (zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path "dist/cbna-${{ matrix.name }}/*" -DestinationPath "dist/cbna-${{ matrix.name }}.zip"
+
+      - name: Archive (tar.gz)
+        if: runner.os == 'Linux'
+        run: tar -czf "dist/cbna-${{ matrix.name }}.tar.gz" -C dist "cbna-${{ matrix.name }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cbna-${{ matrix.name }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    # Only a tag produces a release. A manual run stops after building, which
+    # is the point of allowing manual runs at all.
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd artifacts
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'EOF'
+          ## Which download
+
+          | Archive | Live capture | Runtime requirement |
+          | --- | --- | --- |
+          | `cbna-windows-x86_64` | no | none |
+          | `cbna-windows-x86_64-live` | yes | [Npcap](https://npcap.com) must be installed |
+          | `cbna-linux-x86_64` | no | none |
+          | `cbna-linux-x86_64-live` | yes | `libpcap` must be installed |
+
+          The plain builds read pcap/pcapng files and serve the dashboard. They
+          cannot capture from an interface, and say so if you ask them to.
+
+          The `-live` builds add `cbna devices`, `cbna capture` and
+          `cbna serve --iface`. They link libpcap at load time, so they will not
+          start at all without it present — which is why both variants exist.
+          Capturing also needs elevated privileges: Administrator on Windows,
+          root or `CAP_NET_RAW` on Linux.
+
+          Verify a download against `SHA256SUMS`.
+          EOF
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file notes.md \
+            --verify-tag \
+            artifacts/*
