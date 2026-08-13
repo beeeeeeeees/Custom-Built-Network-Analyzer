@@ -64,11 +64,16 @@ jobs:
 
       - name: Build
         shell: bash
-        env:
-          # Overrides the vendored Windows SDK path from .cargo/config.toml.
-          # Ignored on Windows, where that path is the correct one.
-          LIBPCAP_LIBDIR: ${{ runner.os == 'Linux' && '/usr/lib/x86_64-linux-gnu' || '' }}
         run: |
+          # Linux links the system libpcap; point the pcap crate's build script
+          # at it. On Windows LIBPCAP_LIBDIR is deliberately left unset so the
+          # vendored path from .cargo/config.toml applies — setting it to an
+          # empty string (what a cross-platform `env:` default would do) makes
+          # the build script emit an empty `-L`, which rustc rejects with
+          # "empty search path given via `-L`".
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            export LIBPCAP_LIBDIR=/usr/lib/x86_64-linux-gnu
+          fi
           if [ "${{ matrix.live }}" = "true" ]; then
             cargo build --release --locked -p cbna --features live
           else
