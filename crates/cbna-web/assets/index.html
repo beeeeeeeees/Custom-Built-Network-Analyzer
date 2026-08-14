@@ -231,6 +231,8 @@
   .finding .title { font-weight: 600; }
   .finding.high .title { font-size: 15px; }
   .finding .fid { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .finding .attack { font-family: var(--mono); font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
+  .finding .attack[hidden] { display: none; }
   .finding .detail { color: var(--muted); margin-top: 5px; font-size: 13px; max-width: 105ch; }
   .evtoggle { margin-left: auto; }
   .evlist { margin: 9px 0 0; padding: 0; list-style: none; }
@@ -1317,7 +1319,7 @@ function findingMatches(f, ctx) {
   for (const v of ctx.services) terms.push(v.toLowerCase());
   for (const v of ctx.ja3s) terms.push(v.toLowerCase());
   if (!terms.length) return true;
-  const hay = `${f.id} ${f.title} ${f.detail} ${(f.evidence || []).join(" ")}`.toLowerCase();
+  const hay = `${f.id} ${f.title} ${f.detail} ${(f.technique || []).join(" ")} ${(f.evidence || []).join(" ")}`.toLowerCase();
   return terms.every((t) => hay.includes(t));
 }
 
@@ -1338,6 +1340,7 @@ function buildFinding(f) {
   });
   rec.title = h("span", { cls: "title" });
   rec.fid = h("span", { cls: "fid" });
+  rec.attack = h("span", { cls: "attack" });
   rec.toggle = h("button", {
     cls: "btn tiny evtoggle", type: "button",
     on: { click: () => {
@@ -1350,7 +1353,7 @@ function buildFinding(f) {
   rec.detail = h("div", { cls: "detail" });
   rec.evlist = h("ul", { cls: "evlist" });
   rec.root = h("div", { cls: "finding" },
-    h("div", { cls: "top" }, rec.sev, rec.title, rec.fid, rec.toggle), rec.detail, rec.evlist);
+    h("div", { cls: "top" }, rec.sev, rec.title, rec.fid, rec.attack, rec.toggle), rec.detail, rec.evlist);
   return rec;
 }
 
@@ -1386,6 +1389,9 @@ function renderFindings(report, ctx) {
     rec.sev.className = `sev ${f.severity}`;
     setText(rec.title, f.title);
     setText(rec.fid, f.id);
+    const tech = f.technique || [];
+    setText(rec.attack, tech.length ? `ATT&CK ${tech.join(", ")}` : "");
+    rec.attack.hidden = tech.length === 0;
     setText(rec.detail, f.detail);
 
     const ev = f.evidence || [];
@@ -2081,6 +2087,20 @@ function setStatus(text, cls) {
   el("dot").className = `dot ${cls || ""}`;
 }
 
+/* A static export (`cbna analyze --html`) bakes one snapshot into the page as a
+   JSON script block. When present it is the whole data source — the page renders
+   it once and never polls. Read via textContent + JSON.parse, never innerHTML. */
+function embeddedSnapshot() {
+  const node = document.getElementById("cbna-snapshot");
+  if (!node) return null;
+  try {
+    const payload = JSON.parse(node.textContent);
+    return payload && payload.report ? payload : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 async function poll() {
   let res;
   try {
@@ -2274,11 +2294,26 @@ function boot() {
   wireKeyboard();
   updateHold();
 
+  const snap = embeddedSnapshot();
+  if (snap) {
+    // Offline export: render the baked-in snapshot and stop. No network.
+    setText(el("source"), (snap.status && snap.status.source) || snap.report.source);
+    applyPayload(snap);
+    setStatus(`${num(snap.report.summary.packets)} packets analysed · static export`, "");
+    return;
+  }
+
   poll();
   setInterval(poll, POLL_MS);
 }
 
-boot();
+// Defer until the DOM is parsed so an embedded snapshot placed anywhere in the
+// body is reachable when boot() runs.
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", boot);
+} else {
+  boot();
+}
 
 })();
 </script>

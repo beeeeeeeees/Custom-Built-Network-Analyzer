@@ -8,6 +8,7 @@ pub use beacon::{score_intervals, BeaconScore};
 pub use findings::{Finding, Severity};
 pub use report::{
     DnsOverview, FlowSummary, HttpOverview, Report, ServiceStat, Summary, TalkerStat, TlsOverview,
+    SCHEMA_VERSION,
 };
 
 use crate::flow::FlowTable;
@@ -97,6 +98,29 @@ pub struct DnsIndex {
     /// Parent domain to the set of distinct subdomains seen under it.
     pub subdomains: HashMap<String, BTreeSet<String>>,
     pub servers: BTreeMap<IpAddr, u64>,
+    /// Reverse map from an answered A/AAAA address back to the name that
+    /// resolved to it, so flow and talker tables can show a host by name.
+    /// Bounded like every other per-packet structure; see [`DnsIndex::MAX_RESOLVED`].
+    pub resolved_ips: HashMap<IpAddr, String>,
+}
+
+impl DnsIndex {
+    /// Cap on the reverse resolution map. A hostile capture answering for a
+    /// huge address space must not grow the process without limit.
+    const MAX_RESOLVED: usize = 8192;
+
+    /// Record that `name` resolved to `ip`. Last writer wins so the freshest
+    /// answer shows; new keys stop once the cap is hit, existing ones still update.
+    fn record_resolution(&mut self, ip: IpAddr, name: &str) {
+        if self.resolved_ips.len() < Self::MAX_RESOLVED || self.resolved_ips.contains_key(&ip) {
+            self.resolved_ips.insert(ip, name.to_string());
+        }
+    }
+
+    /// The name that most recently resolved to `ip`, if any.
+    pub fn name_for(&self, ip: &IpAddr) -> Option<&str> {
+        self.resolved_ips.get(ip).map(String::as_str)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -347,9 +371,17 @@ impl Analyzer {
                     }
                 }
                 for a in &d.answers {
-                    if let Some(stat) = self.dns.names.get_mut(&a.name.to_ascii_lowercase()) {
+                    let name = a.name.to_ascii_lowercase();
+                    if let Some(stat) = self.dns.names.get_mut(&name) {
                         if stat.resolved.len() < 32 {
                             stat.resolved.insert(a.data.clone());
+                        }
+                    }
+                    // A (1) and AAAA (28) rdata renders as a parseable address;
+                    // index it back to the name for table enrichment.
+                    if matches!(a.rtype, 1 | 28) {
+                        if let Ok(ip) = a.data.parse::<IpAddr>() {
+                            self.dns.record_resolution(ip, &name);
                         }
                     }
                 }
@@ -550,6 +582,49 @@ mod tests {
         dns.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]);
 
         let mut udp = vec![0xc3, 0x50, 0x00, 0x35];
+        udp.extend_from_slice(&((dns.len() + 8) as u16).to_be_bytes());
+        udp.extend_from_slice(&[0, 0]);
+        udp.extend_from_slice(&dns);
+
+        let total = (20 + udp.len()) as u16;
+        let mut ip = vec![0x45, 0x00];
+        ip.extend_from_slice(&total.to_be_bytes());
+        ip.extend_from_slice(&[0, 1, 0x40, 0, 64, proto_num::UDP, 0, 0]);
+        ip.extend_from_slice(&src);
+        ip.extend_from_slice(&dst);
+        ip.extend_from_slice(&udp);
+
+        let mut eth = vec![0; 12];
+        eth.extend_from_slice(&[0x08, 0x00]);
+        eth.extend_from_slice(&ip);
+        eth
+    }
+
+    /// A DNS response carrying one A record: `qname` → `answer_ip`. The answer
+    /// name is a compression pointer back to the question at offset 12.
+    pub(crate) fn frame_udp_dns_response_a(
+        qname: &str,
+        answer_ip: [u8; 4],
+        src: [u8; 4],
+        dst: [u8; 4],
+    ) -> Vec<u8> {
+        // Header: QR=1, RD, RA; 1 question, 1 answer.
+        let mut dns = vec![
+            0x00, 0x01, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+        ];
+        for label in qname.split('.') {
+            dns.push(label.len() as u8);
+            dns.extend_from_slice(label.as_bytes());
+        }
+        dns.push(0);
+        dns.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]); // QTYPE A, QCLASS IN
+                                                          // Answer: name → pointer to offset 12, type A, class IN, TTL 60, rdlen 4.
+        dns.extend_from_slice(&[0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01]);
+        dns.extend_from_slice(&[0x00, 0x00, 0x00, 0x3c, 0x00, 0x04]);
+        dns.extend_from_slice(&answer_ip);
+
+        // Source port 53 marks this as server→client.
+        let mut udp = vec![0x00, 0x35, 0xc3, 0x50];
         udp.extend_from_slice(&((dns.len() + 8) as u16).to_be_bytes());
         udp.extend_from_slice(&[0, 0]);
         udp.extend_from_slice(&dns);
@@ -802,5 +877,57 @@ mod tests {
         let r = a.report("none");
         assert_eq!(r.summary.packets, 0);
         assert!(r.findings.is_empty());
+    }
+
+    #[test]
+    fn dns_answer_populates_reverse_resolution() {
+        use std::net::IpAddr;
+        let f = frame_udp_dns_response_a(
+            "host.example.com",
+            [93, 184, 216, 34],
+            [10, 0, 0, 53],
+            [10, 0, 0, 5],
+        );
+        let mut a = Analyzer::default();
+        a.observe(&at(1, 1.0, &f), &f);
+
+        let ip: IpAddr = "93.184.216.34".parse().unwrap();
+        assert_eq!(a.dns.name_for(&ip), Some("host.example.com"));
+    }
+
+    #[test]
+    fn flow_summary_shows_resolved_destination() {
+        // Learn the mapping from a DNS answer, then open a flow to that address;
+        // the flow summary should carry the host name.
+        let resp = frame_udp_dns_response_a(
+            "host.example.com",
+            [93, 184, 216, 34],
+            [10, 0, 0, 53],
+            [10, 0, 0, 5],
+        );
+        let flow = tcp_data([10, 0, 0, 5], 50000, [93, 184, 216, 34], 443, b"hello");
+
+        let mut a = Analyzer::default();
+        a.observe(&at(1, 1.0, &resp), &resp);
+        a.observe(&at(2, 2.0, &flow), &flow);
+
+        let report = a.report("t");
+        let hit = report
+            .top_flows
+            .iter()
+            .find(|f| f.destination.starts_with("93.184.216.34"))
+            .expect("flow to the resolved IP should be present");
+        assert_eq!(hit.resolved_dest.as_deref(), Some("host.example.com"));
+    }
+
+    #[test]
+    fn resolution_map_is_bounded() {
+        use std::net::{IpAddr, Ipv4Addr};
+        let mut dns = DnsIndex::default();
+        for i in 0..(DnsIndex::MAX_RESOLVED as u32 + 100) {
+            dns.record_resolution(IpAddr::V4(Ipv4Addr::from(i)), "x");
+        }
+        // New keys stop at the cap; the map cannot grow without bound.
+        assert_eq!(dns.resolved_ips.len(), DnsIndex::MAX_RESOLVED);
     }
 }

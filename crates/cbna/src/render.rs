@@ -185,12 +185,17 @@ pub fn report(out: &mut impl Write, r: &Report, style: &Style, top: usize) -> st
         writeln!(out, "  {}", style.dim("No heuristics fired."))?;
     } else {
         for f in &r.findings {
+            let tail = if f.technique.is_empty() {
+                f.id.clone()
+            } else {
+                format!("{} · ATT&CK {}", f.id, f.technique.join(", "))
+            };
             writeln!(
                 out,
                 "  {} {}  {}",
                 style.severity(f.severity, &format!("[{}]", f.severity)),
                 style.bold(&f.title),
-                style.dim(&f.id)
+                style.dim(&tail)
             )?;
             for line in wrap_text(&f.detail, 92) {
                 writeln!(out, "      {}", style.dim(&line))?;
@@ -268,9 +273,12 @@ pub fn report(out: &mut impl Write, r: &Report, style: &Style, top: usize) -> st
         } else {
             f.protocols.join(",")
         };
-        let app = match &f.sni {
-            Some(sni) => format!("{app} {sni}"),
-            None => app,
+        let app = match (&f.sni, &f.resolved_dest) {
+            // SNI is the strongest name; fall back to the DNS-resolved host so a
+            // plain IP flow still reads as a name when one was observed.
+            (Some(sni), _) => format!("{app} {sni}"),
+            (None, Some(name)) => format!("{app} {name}").trim().to_string(),
+            (None, None) => app,
         };
         t.row(vec![
             f.flow.clone(),
