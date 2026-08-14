@@ -46,6 +46,11 @@ pub struct Finding {
     pub detail: String,
     /// Concrete observations backing the finding.
     pub evidence: Vec<String>,
+    /// MITRE ATT&CK technique IDs this pattern maps to (e.g. `T1071.004`).
+    /// Empty when the signal has no clean enterprise-technique mapping — an
+    /// honest gap is better than a forced one, so this is never invented.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub technique: Vec<String>,
 }
 
 impl Finding {
@@ -61,11 +66,19 @@ impl Finding {
             title: title.into(),
             detail: detail.into(),
             evidence: Vec::new(),
+            technique: Vec::new(),
         }
     }
 
     fn with(mut self, evidence: impl IntoIterator<Item = String>) -> Self {
         self.evidence = evidence.into_iter().take(12).collect();
+        self
+    }
+
+    /// Attach ATT&CK technique IDs. Called with a fixed slice per detection, so
+    /// the mapping lives next to the heuristic that justifies it.
+    fn attack(mut self, ids: &[&str]) -> Self {
+        self.technique = ids.iter().map(|s| s.to_string()).collect();
         self
     }
 }
@@ -125,6 +138,7 @@ fn beaconing(a: &Analyzer, out: &mut Vec<Finding>) {
              Scheduled jobs and telemetry agents look like this too — confirm the \
              process behind the connection before escalating.",
         )
+        .attack(&["T1071"])
         .with(evidence),
     );
 }
@@ -166,6 +180,7 @@ fn dns_tunnelling(a: &Analyzer, out: &mut Vec<Finding>) {
              signature of DNS tunnelling or data staging over DNS. CDNs and some \
              AV vendors also generate these, so check the parent domain's reputation.",
         )
+        .attack(&["T1071.004"])
         .with(evidence),
     );
 }
@@ -219,6 +234,7 @@ fn dga_like_names(a: &Analyzer, out: &mut Vec<Finding>) {
              and by encoded tunnel payloads. Cloud and CDN infrastructure also uses \
              hashed hostnames, so correlate with the parent domain before acting.",
         )
+        .attack(&["T1568.002"])
         .with(evidence),
     );
 }
@@ -264,6 +280,7 @@ fn port_scanning(a: &Analyzer, out: &mut Vec<Finding>) {
                  Vulnerability scanners and monitoring agents produce the same pattern."
             ),
         )
+        .attack(&["T1046"])
         .with(evidence),
     );
 }
@@ -316,6 +333,7 @@ fn data_egress(a: &Analyzer, out: &mut Vec<Finding>) {
                 human_bytes(worst)
             ),
         )
+        .attack(&["T1048"])
         .with(hits),
     );
 }
@@ -336,6 +354,7 @@ fn cleartext_credentials(a: &Analyzer, out: &mut Vec<Finding>) {
              on the path. The header values are not stored by this tool; re-run with the \
              capture in a packet viewer if you need to confirm the account.",
         )
+        .attack(&["T1040"])
         .with(a.http.credential_requests.iter().cloned()),
     );
 }
@@ -375,6 +394,7 @@ fn cleartext_services(a: &Analyzer, out: &mut Vec<Finding>) {
             "These protocols carry their payload, and often their authentication, \
              without transport encryption.",
         )
+        .attack(&["T1040"])
         .with(hits),
     );
 }
@@ -413,6 +433,7 @@ fn obsolete_tls(a: &Analyzer, out: &mut Vec<Finding>) {
              padding-oracle weaknesses. Trace these back to the client or appliance \
              that cannot negotiate anything newer.",
         )
+        .attack(&["T1040"])
         .with(evidence),
     );
 }
@@ -507,6 +528,7 @@ fn arp_conflicts(a: &Analyzer, out: &mut Vec<Finding>) {
              of ARP cache poisoning, but it is also produced by HA failover pairs, \
              clustered virtual IPs and misconfigured static addressing.",
         )
+        .attack(&["T1557.002"])
         .with(conflicts),
     );
 }
@@ -637,6 +659,34 @@ mod tests {
             .expect("expected the tunnelling finding");
         assert_eq!(hit.severity, Severity::High);
         assert!(hit.evidence[0].contains("tunnel.example"));
+        // DNS tunnelling maps to the DNS C2 technique; the mapping travels with
+        // the finding so a SOC report is pre-tagged.
+        assert_eq!(hit.technique, vec!["T1071.004".to_string()]);
+    }
+
+    #[test]
+    fn technique_defaults_empty_and_is_set_only_when_mapped() {
+        // A finding carries no technique unless a detection explicitly maps one,
+        // so an unmapped signal (the IDS-evasion findings) stays honestly blank
+        // rather than inventing a tag.
+        let bare = Finding::new("x", Severity::Info, "t", "d");
+        assert!(bare.technique.is_empty());
+
+        let tagged = Finding::new("y", Severity::High, "t", "d").attack(&["T1046"]);
+        assert_eq!(tagged.technique, vec!["T1046".to_string()]);
+    }
+
+    #[test]
+    fn technique_is_omitted_from_json_when_empty() {
+        // `skip_serializing_if` keeps the JSON clean for untagged findings and
+        // lets `#[serde(default)]` round-trip older documents without the field.
+        let bare = Finding::new("x", Severity::Info, "t", "d");
+        let json = serde_json::to_string(&bare).unwrap();
+        assert!(!json.contains("technique"), "json: {json}");
+
+        let tagged = Finding::new("y", Severity::High, "t", "d").attack(&["T1071"]);
+        let json = serde_json::to_string(&tagged).unwrap();
+        assert!(json.contains("\"technique\":[\"T1071\"]"), "json: {json}");
     }
 
     #[test]

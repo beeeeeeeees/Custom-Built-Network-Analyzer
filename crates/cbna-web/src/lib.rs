@@ -102,6 +102,34 @@ impl AppState {
     }
 }
 
+/// Render a fully self-contained dashboard page with one report baked in, for
+/// offline sharing. The page reads the embedded snapshot instead of polling, so
+/// it needs no server and makes no network requests.
+pub fn render_static(report: &Report) -> String {
+    let status = serde_json::json!({
+        "source": report.source,
+        "live": false,
+        "running": false,
+        "packets": report.summary.packets,
+        "dropped": 0,
+        "elapsed_secs": report.summary.duration_secs,
+        "last_update": report.generated_at,
+    });
+    let payload = serde_json::json!({
+        "generation": 1,
+        "status": status,
+        "report": report,
+    });
+    // Escape `<` so the serialized report can never terminate the <script>
+    // block early; `<` is valid JSON and JSON.parse restores it.
+    let json = serde_json::to_string(&payload)
+        .unwrap_or_else(|_| "null".to_string())
+        .replace('<', "\\u003c");
+    let snippet =
+        format!("<script type=\"application/json\" id=\"cbna-snapshot\">{json}</script>\n</body>");
+    api::INDEX_HTML.replacen("</body>", &snippet, 1)
+}
+
 pub fn router(state: SharedState) -> Router {
     Router::new()
         .route("/", get(api::index))
@@ -161,5 +189,31 @@ mod tests {
         assert!(state.shutdown_requested());
         state.mark_finished();
         assert!(!state.status().running);
+    }
+
+    #[test]
+    fn static_export_embeds_snapshot_without_script_breakout() {
+        // A hostile source string containing </script> must not close the
+        // embedded block early — every `<` is escaped in the JSON.
+        let report = Analyzer::default().report("<script>x</script>.pcap");
+        let page = render_static(&report);
+
+        assert!(page.contains("id=\"cbna-snapshot\""));
+
+        let idx = page.find("id=\"cbna-snapshot\"").unwrap();
+        let after = &page[idx..];
+        let close = after.find("</script>").unwrap();
+        let block = &after[..close];
+        assert!(
+            !block.contains("</script>"),
+            "source string broke out of the snapshot block"
+        );
+        // Escaping `<` alone defeats the breakout: `</script>` can never form
+        // without a literal `<`. The closing tag in the source is now inert.
+        assert!(
+            block.contains("\\u003c/script>"),
+            "`<` was not escaped inside the embedded JSON; block head: {:?}",
+            &block[..block.len().min(200)]
+        );
     }
 }

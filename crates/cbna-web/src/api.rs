@@ -9,7 +9,7 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
-const INDEX_HTML: &str = include_str!("../assets/index.html");
+pub(crate) const INDEX_HTML: &str = include_str!("../assets/index.html");
 
 pub async fn index() -> impl IntoResponse {
     (

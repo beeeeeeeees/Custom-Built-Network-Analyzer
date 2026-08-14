@@ -5,6 +5,11 @@ use crate::time::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 
+/// Version of the [`Report`] JSON shape. Downstream tooling can pin this and
+/// know when a field it relies on may have changed. Bump only on a *breaking*
+/// change — additive fields do not need one.
+pub const SCHEMA_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Summary {
     pub packets: u64,
@@ -75,6 +80,10 @@ pub struct FlowSummary {
     pub ja3: Option<String>,
     pub protocols: Vec<String>,
     pub reset: bool,
+    /// Name that resolved (via observed DNS) to this flow's destination address,
+    /// so an opaque IP reads as a host. Absent when no A/AAAA answer named it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_dest: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +118,8 @@ pub struct HttpOverview {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Report {
+    /// Version of this JSON shape; see [`SCHEMA_VERSION`].
+    pub schema_version: u32,
     pub tool: String,
     pub generated_at: String,
     pub source: String,
@@ -160,7 +171,7 @@ pub(super) fn build(a: &Analyzer, source: String) -> Report {
         .by_bytes()
         .into_iter()
         .take(n)
-        .map(flow_summary)
+        .map(|f| flow_summary(f, &a.dns))
         .collect();
 
     let mut top_names: Vec<(String, u64)> = a
@@ -230,6 +241,7 @@ pub(super) fn build(a: &Analyzer, source: String) -> Report {
     };
 
     Report {
+        schema_version: SCHEMA_VERSION,
         tool: format!("cbna {}", env!("CARGO_PKG_VERSION")),
         generated_at: Timestamp::new(now_unix(), 0).to_rfc3339(),
         source,
@@ -250,11 +262,13 @@ pub(super) fn build(a: &Analyzer, source: String) -> Report {
     }
 }
 
-fn flow_summary(f: &crate::flow::Flow) -> FlowSummary {
+fn flow_summary(f: &crate::flow::Flow, dns: &super::DnsIndex) -> FlowSummary {
+    let (server_ip, _) = f.server();
     FlowSummary {
+        resolved_dest: dns.name_for(&server_ip).map(str::to_string),
         flow: f.key.to_string(),
         source: format!("{}:{}", f.client().0, f.client().1),
-        destination: format!("{}:{}", f.server().0, f.server().1),
+        destination: format!("{}:{}", server_ip, f.server().1),
         protocol: crate::net::proto_name(f.key.protocol).to_string(),
         service: f.service().map(|(_, _, name)| name.to_string()),
         scope: f.scope().to_string(),
@@ -308,6 +322,7 @@ mod tests {
         a.observe(&at(2, 103.0, &f), &f);
 
         let report = a.report("unit-test.pcap");
+        assert_eq!(report.schema_version, SCHEMA_VERSION);
         assert_eq!(report.summary.packets, 2);
         assert_eq!(report.summary.flows, 1);
         assert_eq!(report.dns.unique_names, 1);

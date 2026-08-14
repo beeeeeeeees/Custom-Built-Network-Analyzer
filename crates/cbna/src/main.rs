@@ -10,8 +10,8 @@ mod render;
 mod livecmd;
 
 use anyhow::{bail, Context, Result};
-use cbna_core::analysis::{AnalysisConfig, Analyzer};
-use clap::{Args, Parser, Subcommand};
+use cbna_core::analysis::{AnalysisConfig, Analyzer, Severity};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -60,6 +60,11 @@ struct AnalyzeArgs {
     #[arg(long, value_name = "PATH")]
     json: Option<String>,
 
+    /// Write a self-contained, offline HTML dashboard for this capture. The
+    /// page needs no server and makes no network requests — share it as-is.
+    #[arg(long, value_name = "PATH")]
+    html: Option<String>,
+
     /// Rows to show in each table.
     #[arg(long, default_value_t = 20)]
     top: usize,
@@ -76,9 +81,40 @@ struct AnalyzeArgs {
     #[arg(long)]
     findings_only: bool,
 
+    /// Exit non-zero (code 2) if any finding at or above this severity fired.
+    /// Lets the run gate a CI or SOAR pipeline. Operational errors stay code 1.
+    #[arg(long, value_name = "LEVEL")]
+    fail_on: Option<FailOn>,
+
     #[command(flatten)]
     tuning: TuningArgs,
 }
+
+/// Severity floor for `--fail-on`. Kept separate from the core `Severity` so the
+/// CLI owns its own value-parsing surface.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum FailOn {
+    Info,
+    Low,
+    Medium,
+    High,
+}
+
+impl FailOn {
+    fn threshold(self) -> Severity {
+        match self {
+            FailOn::Info => Severity::Info,
+            FailOn::Low => Severity::Low,
+            FailOn::Medium => Severity::Medium,
+            FailOn::High => Severity::High,
+        }
+    }
+}
+
+/// Exit code emitted when `--fail-on` is armed and a finding meets the floor.
+/// Distinct from 1 (an operational error via `anyhow`) so automation can tell a
+/// clean-but-flagged run apart from a broken one.
+const EXIT_FINDINGS_GATE: i32 = 2;
 
 /// Detection thresholds, exposed because the right values depend on the
 /// network being looked at.
@@ -245,11 +281,25 @@ fn cmd_analyze(args: AnalyzeArgs, style: &render::Style) -> Result<()> {
 
     let report = analyzer.report(&description);
 
+    // Evaluated up front so every output path exits with the same gate code.
+    let gate = args
+        .fail_on
+        .map(|f| findings_gate(&report, f.threshold()))
+        .unwrap_or(0);
+
+    if let Some(target) = &args.html {
+        let page = cbna_web::render_static(&report);
+        std::fs::write(target, page)
+            .with_context(|| format!("writing HTML dashboard to {target}"))?;
+        eprintln!("Dashboard written to {target}");
+    }
+
     if let Some(target) = &args.json {
         let json = serde_json::to_string_pretty(&report)?;
         if target == "-" {
             // JSON is going to stdout, so the human report would corrupt it.
             println!("{json}");
+            gated_exit(gate);
             return Ok(());
         }
         std::fs::write(target, json).with_context(|| format!("writing JSON report to {target}"))?;
@@ -259,9 +309,14 @@ fn cmd_analyze(args: AnalyzeArgs, style: &render::Style) -> Result<()> {
     let mut out = stdout.lock();
     if args.findings_only {
         for f in &report.findings {
+            let attack = if f.technique.is_empty() {
+                String::new()
+            } else {
+                format!("  (ATT&CK {})", f.technique.join(", "))
+            };
             writeln!(
                 out,
-                "{} {}",
+                "{} {}{attack}",
                 style.severity(f.severity, &format!("[{}]", f.severity)),
                 f.title
             )?;
@@ -269,10 +324,30 @@ fn cmd_analyze(args: AnalyzeArgs, style: &render::Style) -> Result<()> {
                 writeln!(out, "    · {e}")?;
             }
         }
+        gated_exit(gate);
         return Ok(());
     }
     render::report(&mut out, &report, style, args.top)?;
+    gated_exit(gate);
     Ok(())
+}
+
+/// Highest-severity gate: `EXIT_FINDINGS_GATE` if any finding meets `threshold`,
+/// else `0`.
+fn findings_gate(report: &cbna_core::analysis::Report, threshold: Severity) -> i32 {
+    if report.findings.iter().any(|f| f.severity >= threshold) {
+        EXIT_FINDINGS_GATE
+    } else {
+        0
+    }
+}
+
+/// Exit the process when the gate is armed; a no-op (returns) when it is `0`, so
+/// callers fall through to their normal `Ok(())`.
+fn gated_exit(code: i32) {
+    if code != 0 {
+        std::process::exit(code);
+    }
 }
 
 fn cmd_serve(args: ServeArgs, _style: &render::Style) -> Result<()> {
