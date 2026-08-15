@@ -85,6 +85,7 @@ impl Finding {
 
 pub(super) fn collect(a: &Analyzer) -> Vec<Finding> {
     let mut out = Vec::new();
+    ioc_hits(a, &mut out);
     beaconing(a, &mut out);
     dns_tunnelling(a, &mut out);
     dga_like_names(a, &mut out);
@@ -100,6 +101,91 @@ pub(super) fn collect(a: &Analyzer) -> Vec<Finding> {
 
     out.sort_by(|x, y| y.severity.cmp(&x.severity).then_with(|| x.id.cmp(&y.id)));
     out
+}
+
+/// Traffic that touched an indicator from the supplied threat-intel list.
+///
+/// Unlike every other detection here, this is not a heuristic: a hit means an
+/// address, name or fingerprint the operator marked as bad was actually seen.
+/// It is still evidence, not a verdict — a stale or over-broad indicator (a CDN
+/// range, a parked parent domain) produces the same match — so each finding
+/// names the exact indicator and where it fired. Emitted per kind so downstream
+/// tooling can key on a stable id, and left without an ATT&CK tag because
+/// matching an indicator is not itself a technique.
+fn ioc_hits(a: &Analyzer, out: &mut Vec<Finding>) {
+    let Some(m) = a.ioc_matches() else {
+        return;
+    };
+
+    if !m.ip.is_empty() {
+        let evidence =
+            m.ip.iter()
+                .map(|h| format!("{} ({} packet(s))", ioc_evidence(h), h.count));
+        out.push(
+            Finding::new(
+                "ioc-ip-match",
+                Severity::High,
+                format!("{} host(s) matched an IP/CIDR indicator", m.ip.len()),
+                "An address in the capture matches a threat-intel indicator. Confirm \
+                 the source is current and the indicator specific — recycled cloud \
+                 addresses and broad ranges produce stale hits.",
+            )
+            .with(evidence),
+        );
+    }
+
+    if !m.domain.is_empty() {
+        let evidence = m
+            .domain
+            .iter()
+            .map(|h| format!("{} ({} lookup(s)/hit(s))", ioc_evidence(h), h.count));
+        out.push(
+            Finding::new(
+                "ioc-domain-match",
+                Severity::High,
+                format!("{} name(s) matched a domain indicator", m.domain.len()),
+                "A DNS name, HTTP host or TLS SNI matches a threat-intel domain. A \
+                 parent-domain indicator also matches its subdomains, so a \
+                 shared-hosting or CDN parent can catch benign names — check which \
+                 subdomain actually appears.",
+            )
+            .with(evidence),
+        );
+    }
+
+    if !m.ja3.is_empty() {
+        let evidence = m
+            .ja3
+            .iter()
+            .map(|h| format!("{} ({} handshake(s))", ioc_evidence(h), h.count));
+        out.push(
+            Finding::new(
+                "ioc-ja3-match",
+                Severity::High,
+                format!("{} TLS client(s) matched a JA3 indicator", m.ja3.len()),
+                "A TLS ClientHello fingerprint matches a threat-intel JA3 hash. JA3 \
+                 identifies the client stack, not the host, so a shared library or \
+                 common tool can share a fingerprint with the flagged one — \
+                 corroborate with the destination before escalating.",
+            )
+            .with(evidence),
+        );
+    }
+}
+
+/// `indicator → observed [context] via source (tag)` — one evidence line for an
+/// IOC hit. The source and tag are what make a feed hit actionable, so they are
+/// always named; the tag is dropped when the source did not carry one.
+fn ioc_evidence(h: &crate::analysis::report::IocHit) -> String {
+    let tag = h
+        .tag
+        .as_ref()
+        .map(|t| format!(" ({t})"))
+        .unwrap_or_default();
+    format!(
+        "{} → {} [{}] via {}{tag}",
+        h.indicator, h.observed, h.context, h.source
+    )
 }
 
 fn beaconing(a: &Analyzer, out: &mut Vec<Finding>) {
@@ -765,6 +851,80 @@ mod tests {
             "evidence should name the real host, not the truncated one: {:?}",
             hit.evidence
         );
+    }
+
+    #[test]
+    fn ioc_indicators_fire_high_severity_findings() {
+        use crate::analysis::tests::{at, frame_udp_dns, tcp_data};
+        use crate::ioc::IocSet;
+
+        // A DNS lookup for a subdomain of a flagged parent, and a flow to a
+        // flagged address.
+        let dns = frame_udp_dns("c2.evil.example", [10, 0, 0, 5], [10, 0, 0, 1]);
+        let flow = tcp_data([10, 0, 0, 5], 50000, [93, 184, 216, 34], 443, b"hello");
+        let mut a = Analyzer::default();
+        a.observe(&at(1, 1.0, &dns), &dns);
+        a.observe(&at(2, 2.0, &flow), &flow);
+
+        let mut set = IocSet::default();
+        set.insert("93.184.216.34").unwrap();
+        set.insert("evil.example").unwrap();
+        a.set_iocs(set);
+
+        let findings = a.findings();
+
+        let ip_hit = findings
+            .iter()
+            .find(|f| f.id == "ioc-ip-match")
+            .expect("ip indicator should fire");
+        assert_eq!(ip_hit.severity, Severity::High);
+        assert!(ip_hit.evidence.iter().any(|e| e.contains("93.184.216.34")));
+        // IOC matching is not a technique, so it carries no ATT&CK tag.
+        assert!(ip_hit.technique.is_empty());
+
+        let dom_hit = findings
+            .iter()
+            .find(|f| f.id == "ioc-domain-match")
+            .expect("domain indicator should fire");
+        // The evidence names both the parent that matched and the subdomain seen.
+        assert!(dom_hit
+            .evidence
+            .iter()
+            .any(|e| e.contains("evil.example") && e.contains("c2.evil.example")));
+    }
+
+    #[test]
+    fn no_indicator_list_produces_no_ioc_findings() {
+        use crate::analysis::tests::{at, frame_udp_dns};
+
+        let dns = frame_udp_dns("c2.evil.example", [10, 0, 0, 5], [10, 0, 0, 1]);
+        let mut a = Analyzer::default();
+        a.observe(&at(1, 1.0, &dns), &dns);
+
+        assert!(a.ioc_matches().is_none());
+        assert!(a.findings().iter().all(|f| !f.id.starts_with("ioc-")));
+    }
+
+    #[test]
+    fn indicator_list_with_no_hits_fires_nothing() {
+        use crate::analysis::tests::{at, frame_udp_dns};
+        use crate::ioc::IocSet;
+
+        let dns = frame_udp_dns("www.good.example", [10, 0, 0, 5], [10, 0, 0, 1]);
+        let mut a = Analyzer::default();
+        a.observe(&at(1, 1.0, &dns), &dns);
+
+        let mut set = IocSet::default();
+        set.insert("evil.example").unwrap();
+        a.set_iocs(set);
+
+        // A loaded-but-unmatched list yields a Some with empty vectors, and no
+        // findings — distinguishing "no list" from "list, clean" for a report.
+        let m = a
+            .ioc_matches()
+            .expect("a loaded list reports even with no hits");
+        assert!(m.is_empty());
+        assert!(a.findings().iter().all(|f| !f.id.starts_with("ioc-")));
     }
 
     #[test]

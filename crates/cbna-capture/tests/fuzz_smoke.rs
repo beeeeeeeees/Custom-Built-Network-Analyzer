@@ -139,6 +139,53 @@ fn capture_file_never_panics() {
     }
 }
 
+/// Corpus for the indicator-list reader: one seed of each accepted kind, the
+/// comment and blank handling, and inputs built to break the classifier — a
+/// bare word, an over-long prefix, non-UTF-8 bytes.
+fn ioc_seeds() -> Vec<Vec<u8>> {
+    vec![
+        b"203.0.113.7\n198.51.100.0/24\nc2.evil.example\ne7d705a3286e19ea42f587b344ee6865\n"
+            .to_vec(),
+        b"# comment only\n\n   \n".to_vec(),
+        b"2001:db8::/32\n::1\n".to_vec(),
+        b"10.0.0.1  # inline\nnot-an-indicator\nbad_host.com\n".to_vec(),
+        b"999.999.999.999\n10.0.0.0/99\n".to_vec(),
+        vec![0xff, 0xfe, b'\n', b'e', b'v', b'i', b'l', b'.', b'x', b'\n'],
+        Vec::new(),
+    ]
+}
+
+#[test]
+fn ioc_list_never_panics() {
+    use cbna_capture::fuzz::ioc_list;
+    use cbna_core::fuzz::Mutator;
+
+    let seeds = ioc_seeds();
+    let mut rng = Mutator::new(0xB5AD_4ECE_DA1A_53B5);
+
+    for s in &seeds {
+        ioc_list(s);
+    }
+    for _ in 0..20_000 {
+        let seed = &seeds[rng.below(seeds.len())];
+        ioc_list(&rng.mutate(seed));
+    }
+    for _ in 0..5_000 {
+        ioc_list(&rng.noise(2048));
+    }
+}
+
+#[test]
+fn ioc_seeds_load_the_indicators_they_should() {
+    // Guards the corpus: if the first seed stops parsing to four indicators the
+    // mutation run above quietly degrades into testing the reject path only.
+    use cbna_capture::ioc::parse_iocs;
+
+    let (set, warnings) = parse_iocs(&ioc_seeds()[0]);
+    assert_eq!(set.len(), 4, "the mixed seed should load four indicators");
+    assert!(warnings.is_empty());
+}
+
 #[test]
 fn well_formed_seeds_actually_parse() {
     // Guards the corpus itself: if a seed stops being a valid capture, the

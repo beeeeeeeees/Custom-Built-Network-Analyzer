@@ -9,6 +9,7 @@
 
 pub mod file;
 pub mod fuzz;
+pub mod ioc;
 pub mod writer;
 
 #[cfg(feature = "live")]

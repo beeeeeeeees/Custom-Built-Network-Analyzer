@@ -16,6 +16,9 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 cbna-core = { path = "../crates/cbna-core" }
 cbna-capture = { path = "../crates/cbna-capture" }
+# default-features off: the feed parsers are fuzzed, not the network client, so
+# the TLS stack stays out of the fuzz build.
+cbna-intel = { path = "../crates/cbna-intel", default-features = false }
 
 [profile.release]
 debug = 1
@@ -59,5 +62,17 @@ doc = false
 [[bin]]
 name = "ip_reassembly"
 path = "fuzz_targets/ip_reassembly.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "ioc_list"
+path = "fuzz_targets/ioc_list.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "feed_parse"
+path = "fuzz_targets/feed_parse.rs"
 test = false
 doc = false

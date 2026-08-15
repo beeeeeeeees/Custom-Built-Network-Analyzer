@@ -12,6 +12,7 @@ pub use report::{
 };
 
 use crate::flow::FlowTable;
+use crate::ioc::IocSet;
 use crate::ip_reassembly::IpReassembler;
 use crate::link::{ArpOp, MacAddr};
 use crate::net::proto_num;
@@ -184,6 +185,11 @@ pub struct Analyzer {
     /// Rebuilds IP datagrams from their fragments so the transport and
     /// application layers of a fragmented datagram are still decoded.
     pub ip_reassembly: IpReassembler,
+    /// Threat-intel indicators to match observed traffic against. Loaded from an
+    /// external list by the front-end (`--ioc`) and attached before the report
+    /// is built; `None` when no list was supplied. Matching reads the indexes
+    /// above after the capture is folded in, so this never touches `observe`.
+    pub ioc: Option<IocSet>,
 }
 
 impl Default for Analyzer {
@@ -206,7 +212,15 @@ impl Analyzer {
             timeline: BTreeMap::new(),
             reassembly: Reassembler::new(),
             ip_reassembly: IpReassembler::new(),
+            ioc: None,
         }
+    }
+
+    /// Attach a threat-intel indicator set to match against. Call after folding
+    /// in the capture and before [`Analyzer::report`]; a set with no indicators
+    /// is treated as none.
+    pub fn set_iocs(&mut self, set: IocSet) {
+        self.ioc = if set.is_empty() { None } else { Some(set) };
     }
 
     /// Fold one decoded packet into every index.
@@ -543,6 +557,114 @@ impl Analyzer {
     /// Everything the heuristics flagged, most severe first.
     pub fn findings(&self) -> Vec<Finding> {
         findings::collect(self)
+    }
+
+    /// Match the loaded indicator list against everything observed. `None` when
+    /// no list was supplied; `Some` — possibly with empty hit vectors — when one
+    /// was, so a report can distinguish "no indicators loaded" from "loaded, no
+    /// hits". Reads the accumulated indexes only, never the packet stream.
+    pub fn ioc_matches(&self) -> Option<report::IocMatches> {
+        let set = self.ioc.as_ref()?;
+        let mut m = report::IocMatches {
+            indicators_loaded: set.len(),
+            sources: set.sources().to_vec(),
+            ..Default::default()
+        };
+
+        // IPs: every endpoint seen is a key in `hosts`, so this covers both
+        // sides of every flow without walking the flow table separately.
+        let mut ip_hits: Vec<report::IocHit> = self
+            .hosts
+            .iter()
+            .filter_map(|(ip, stat)| {
+                set.match_ip(*ip).map(|hit| report::IocHit {
+                    kind: "ip".into(),
+                    indicator: hit.indicator,
+                    observed: ip.to_string(),
+                    context: "host".into(),
+                    source: hit.source,
+                    tag: hit.tag,
+                    count: stat.packets_sent + stat.packets_received,
+                })
+            })
+            .collect();
+        ip_hits.sort_by(|a, b| {
+            b.count
+                .cmp(&a.count)
+                .then_with(|| a.observed.cmp(&b.observed))
+        });
+        m.ip = ip_hits;
+
+        // Domains: one hit per matched name, with every place it was seen folded
+        // into the context so the same C2 name in a DNS query and an SNI is one
+        // row, not three. Ordered by total activity behind the name.
+        let mut domains: BTreeMap<String, (crate::ioc::IocMatch, BTreeSet<&'static str>, u64)> =
+            BTreeMap::new();
+        let mut note = |observed: &str, source: &'static str, count: u64| {
+            if let Some(hit) = set.match_domain(observed) {
+                let e = domains
+                    .entry(observed.to_ascii_lowercase())
+                    .or_insert_with(|| (hit, BTreeSet::new(), 0));
+                e.1.insert(source);
+                e.2 += count;
+            }
+        };
+        for (name, stat) in &self.dns.names {
+            note(name, "dns", stat.queries + stat.responses);
+        }
+        for (host, count) in &self.http.hosts {
+            note(host, "http", *count);
+        }
+        for (sni, count) in &self.tls.sni {
+            note(sni, "sni", *count);
+        }
+        let mut domain_hits: Vec<report::IocHit> = domains
+            .into_iter()
+            .map(|(observed, (hit, seen, count))| report::IocHit {
+                kind: "domain".into(),
+                indicator: hit.indicator,
+                observed,
+                context: seen.into_iter().collect::<Vec<_>>().join("/"),
+                source: hit.source,
+                tag: hit.tag,
+                count,
+            })
+            .collect();
+        domain_hits.sort_by(|a, b| {
+            b.count
+                .cmp(&a.count)
+                .then_with(|| a.observed.cmp(&b.observed))
+        });
+        m.domain = domain_hits;
+
+        // JA3: the client fingerprint of every distinct handshake shape.
+        let mut ja3_hits: Vec<report::IocHit> = self
+            .tls
+            .ja3
+            .iter()
+            .filter_map(|(hash, (count, sni))| {
+                set.match_ja3(hash).map(|hit| report::IocHit {
+                    kind: "ja3".into(),
+                    indicator: hit.indicator,
+                    observed: hash.clone(),
+                    context: match sni {
+                        Some(s) => format!("tls client sni={s}"),
+                        None => "tls client".into(),
+                    },
+                    source: hit.source,
+                    tag: hit.tag,
+                    count: *count,
+                })
+            })
+            .collect();
+        ja3_hits.sort_by(|a, b| {
+            b.count
+                .cmp(&a.count)
+                .then_with(|| a.observed.cmp(&b.observed))
+        });
+        m.ja3 = ja3_hits;
+
+        Some(m)
     }
 
     /// Build the full serialisable report.
