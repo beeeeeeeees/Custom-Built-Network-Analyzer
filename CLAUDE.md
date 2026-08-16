@@ -108,6 +108,29 @@ When the fuzzer finds a crash, add the input to `seeds()` in the matching
 `fuzz_smoke.rs` before fixing it. That is the only part of the corpus that
 survives, and it is what stops the bug coming back.
 
+## Threat-intel matching
+
+`cbna-core/src/ioc.rs` is the matcher (`IocSet`): pure data, no I/O, like the
+rest of core. Indicators (IP/CIDR, domain, JA3) carry per-indicator provenance —
+source and an optional tag — so a hit names the feed that flagged it. Matching
+runs at report time against the accumulated indexes, never in `observe`, so the
+per-packet path is untouched. `analysis::mod::ioc_matches` gathers hits and
+`findings::ioc_hits` turns them into `ioc-*` findings.
+
+External indicator data loads **outside** core and enters as a finished
+`IocSet`, keeping the no-I/O rule: a local `--ioc` list is parsed by
+`cbna-capture/src/ioc.rs`, and OSINT feeds by `cbna-intel`. Both text parsers are
+fuzzed (`ioc_list`, `feed_parse`) on the nightly and `fuzz_smoke.rs` paths — any
+new feed format is a new parser and needs the same.
+
+`cbna-intel` is feature-gated (`intel` on the binary, `net` on the crate) so the
+base build stays offline and dependency-light. `fetch.rs` is the network trust
+boundary: TLS verification, timeouts, a bounded redirect chain and a response
+size cap. Feeds cache to disk with a snapshot manifest; analysis reads the cache
+offline and stamps each source's fetch time into the report for reproducibility.
+A failed fetch keeps the last good cache. Feed layouts drift — verify the columns
+against a live sample before trusting a `Format`.
+
 ## Adding a detection
 
 Add a function in `crates/cbna-core/src/analysis/findings.rs` and call it from

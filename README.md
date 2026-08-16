@@ -33,10 +33,11 @@ than aborting the run.
 
 | Crate | Responsibility |
 | --- | --- |
-| `cbna-core` | Decoding, flow tracking, analysis. No I/O, no async. |
+| `cbna-core` | Decoding, flow tracking, analysis, IOC matching. No I/O, no async. |
 | `cbna-capture` | Packet sources: pcap/pcapng readers, pcap writer, live interface. |
 | `cbna-web` | Axum dashboard serving analysis snapshots. |
-| `cbna` | CLI binary tying the three together. |
+| `cbna-intel` | Fetch and cache OSINT threat-intel feeds (`--features intel`). |
+| `cbna` | CLI binary tying them together. |
 
 Both front-ends drive the same path — `Source` → `decode()` → `Analyzer` — so a
 live capture and a saved file produce identical findings.
@@ -77,6 +78,51 @@ benign thing produces the same pattern — these are leads, not verdicts.
 
 Thresholds are tunable per run: `--beacon-jitter`, `--beacon-min-packets`,
 `--dns-subdomains`, `--scan-ports`.
+
+### Threat-intel matching
+
+Pass `--ioc <FILE>` to match observed traffic against an indicator list — one
+IP, CIDR, domain or JA3 hash per line, `#` for comments, each token
+auto-classified. Unlike the heuristics above, a hit means an indicator you
+supplied was actually seen; it is still evidence, not a verdict, since stale or
+over-broad indicators (recycled cloud addresses, parked parents) match too.
+
+| ID | Severity | Signal |
+| --- | --- | --- |
+| `ioc-ip-match` | high | A host address matched a listed IP or CIDR range |
+| `ioc-domain-match` | high | A DNS name, HTTP host or TLS SNI matched a listed domain (subdomains of a listed parent match) |
+| `ioc-ja3-match` | high | A TLS ClientHello fingerprint matched a listed JA3 hash |
+
+Hits also appear as a structured `ioc` section in the `--json` report. Malformed
+lines are reported and skipped; only an unreadable file fails the run.
+
+#### Open-source feeds
+
+Build with `--features intel` to fetch indicators from public OSINT feeds instead
+of (or alongside) a hand-supplied list. Feeds are cached locally so analysis stays
+offline and reproducible — a run records the snapshot time of each source it
+matched against.
+
+```
+cbna intel update                 # refresh the local feed cache
+cbna intel list                   # show feeds and cache status
+cbna analyze cap.pcap --intel     # match against the cache
+cbna analyze cap.pcap --intel-live  # fetch fresh, skip the cache
+```
+
+Shipped feeds (all [abuse.ch](https://abuse.ch), permissively licensed):
+
+| Feed | id | Indicators |
+| --- | --- | --- |
+| Feodo Tracker | `feodo` | botnet C2 IPs |
+| SSLBL | `sslbl` | malicious JA3 hashes (historical — frozen at 2021) |
+| URLhaus | `urlhaus` | malware distribution domains |
+
+A feed hit names its source and any label the feed carried, e.g. *Emotet C2 via
+feodo*. `--intel` and `--ioc` combine, and each indicator keeps its own
+provenance. A feed that fails to fetch leaves its last good cache in place rather
+than sinking the run. abuse.ch is moving feeds behind a free Auth-Key: pass
+`--intel-auth-key` or set `CBNA_ABUSECH_AUTHKEY` for any that require one.
 
 ### On flow direction
 
@@ -173,6 +219,14 @@ cbna analyze <FILE>            Analyse a capture file
   --limit <N>                  Stop after N packets
   --packets                    One line per packet as it decodes
   --findings-only              Print only the findings section
+  --ioc <FILE>                 Match traffic against a threat-intel indicator list
+  --intel / --intel-live       Match against cached / freshly-fetched OSINT feeds
+
+cbna intel update              Refresh the OSINT feed cache   (needs --features intel)
+cbna intel list                Show feeds and cache status
+  --intel-feed <ID>            Restrict to a feed (repeatable)
+  --intel-auth-key <KEY>       abuse.ch key (or CBNA_ABUSECH_AUTHKEY)
+  --intel-cache-dir <DIR>      Override the feed cache location
 
 cbna serve [FILE]              Web dashboard
   --iface <NAME>               Live capture instead of a file

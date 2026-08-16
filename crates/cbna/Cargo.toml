@@ -15,11 +15,16 @@ default = []
 # Enable live interface capture (`cbna devices`, `cbna capture`,
 # `cbna serve --iface`). Requires libpcap/Npcap SDK at build time.
 live = ["cbna-capture/live"]
+# Enable fetching open-source threat-intel feeds (`cbna intel`, `analyze
+# --intel`). Pulls in a rustls HTTP client; off by default so the base build
+# stays dependency-light and fully offline.
+intel = ["dep:cbna-intel"]
 
 [dependencies]
 cbna-core.workspace = true
 cbna-capture.workspace = true
 cbna-web.workspace = true
+cbna-intel = { workspace = true, optional = true }
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true

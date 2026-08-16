@@ -49,6 +49,31 @@ enum Command {
 
     /// Capture live traffic, optionally writing it to a pcap file.
     Capture(CaptureArgs),
+
+    /// Manage the cache of open-source threat-intel feeds.
+    Intel(IntelArgs),
+}
+
+#[derive(Args, Debug)]
+struct IntelArgs {
+    #[command(subcommand)]
+    cmd: IntelCmd,
+}
+
+#[derive(Subcommand, Debug)]
+enum IntelCmd {
+    /// Fetch the feeds into the local cache. Failed feeds keep their last good
+    /// copy; the rest still update.
+    Update(IntelActionArgs),
+
+    /// Show the available feeds and what is currently cached.
+    List(IntelActionArgs),
+}
+
+#[derive(Args, Debug)]
+struct IntelActionArgs {
+    #[command(flatten)]
+    opts: IntelOpts,
 }
 
 #[derive(Args, Debug)]
@@ -86,8 +111,47 @@ struct AnalyzeArgs {
     #[arg(long, value_name = "LEVEL")]
     fail_on: Option<FailOn>,
 
+    /// Match observed traffic against a threat-intel indicator list: one IP,
+    /// CIDR, domain or JA3 hash per line, "#" for comments. Hits surface as
+    /// ioc-* findings and in the JSON report's "ioc" section.
+    #[arg(long, value_name = "PATH")]
+    ioc: Option<PathBuf>,
+
+    /// Match against cached open-source threat-intel feeds. Refresh the cache
+    /// first with `cbna intel update`. Combines with --ioc. Needs the `intel`
+    /// build feature.
+    #[arg(long)]
+    intel: bool,
+
+    /// Like --intel, but fetch the feeds fresh right now instead of reading the
+    /// cache. Requires network access.
+    #[arg(long)]
+    intel_live: bool,
+
+    #[command(flatten)]
+    intel_opts: IntelOpts,
+
     #[command(flatten)]
     tuning: TuningArgs,
+}
+
+/// Shared threat-intel feed options, flattened into the commands that fetch or
+/// read feeds so the auth key and cache location are specified the same way
+/// everywhere.
+#[derive(Args, Debug, Clone)]
+struct IntelOpts {
+    /// abuse.ch Auth-Key for feeds that require one. Falls back to the
+    /// CBNA_ABUSECH_AUTHKEY environment variable.
+    #[arg(long, value_name = "KEY")]
+    intel_auth_key: Option<String>,
+
+    /// Feed cache directory. Defaults to the per-user platform cache directory.
+    #[arg(long, value_name = "DIR")]
+    intel_cache_dir: Option<PathBuf>,
+
+    /// Restrict to these feed ids (repeatable). Default: all built-in feeds.
+    #[arg(long = "intel-feed", value_name = "ID")]
+    intel_feeds: Vec<String>,
 }
 
 /// Severity floor for `--fail-on`. Kept separate from the core `Severity` so the
@@ -251,6 +315,7 @@ fn main() -> Result<()> {
         Command::Serve(args) => cmd_serve(args, &style),
         Command::Devices => cmd_devices(&style),
         Command::Capture(args) => cmd_capture(args, &style),
+        Command::Intel(args) => cmd_intel(args),
     }
 }
 
@@ -258,7 +323,7 @@ fn cmd_analyze(args: AnalyzeArgs, style: &render::Style) -> Result<()> {
     let config = args.tuning.apply(args.top);
     let stdout = std::io::stdout();
 
-    let (analyzer, stats, description) = if args.packets {
+    let (mut analyzer, stats, description) = if args.packets {
         let mut out = stdout.lock();
         let mut hook = |pkt: &cbna_core::DecodedPacket| {
             // A closed pipe (`| head`) is a normal way to stop; do not panic.
@@ -277,6 +342,11 @@ fn cmd_analyze(args: AnalyzeArgs, style: &render::Style) -> Result<()> {
             "warning: no packets were decoded from {}",
             args.file.display()
         );
+    }
+
+    if args.ioc.is_some() || args.intel || args.intel_live {
+        let set = build_ioc_set(&args)?;
+        analyzer.set_iocs(set);
     }
 
     let report = analyzer.report(&description);
@@ -330,6 +400,178 @@ fn cmd_analyze(args: AnalyzeArgs, style: &render::Style) -> Result<()> {
     render::report(&mut out, &report, style, args.top)?;
     gated_exit(gate);
     Ok(())
+}
+
+/// Build the combined indicator set for an analyze run from whichever sources
+/// were requested: a local `--ioc` list, cached feeds (`--intel`), and/or a live
+/// feed fetch (`--intel-live`). They merge, so a run can match a bespoke list
+/// alongside open-source feeds. Malformed indicators are reported but never fail
+/// the run.
+fn build_ioc_set(args: &AnalyzeArgs) -> Result<cbna_core::ioc::IocSet> {
+    use cbna_core::ioc::IocSet;
+    let mut set = IocSet::default();
+
+    if let Some(path) = &args.ioc {
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("reading indicator list {}", path.display()))?;
+        let (list, warnings) = cbna_capture::ioc::parse_iocs(&bytes);
+        for w in &warnings {
+            eprintln!(
+                "warning: indicator list line {}: skipped {:?} ({})",
+                w.line, w.text, w.reason
+            );
+        }
+        eprintln!("Loaded {} indicator(s) from {}", list.len(), path.display());
+        set.extend(list);
+    }
+
+    if args.intel || args.intel_live {
+        let feeds = load_feeds(args.intel_live, &args.intel_opts)?;
+        set.extend(feeds);
+    }
+
+    Ok(set)
+}
+
+/// Load feeds from the cache, or fetch them live, per `--intel` / `--intel-live`.
+/// Gated on the `intel` build feature; without it, requesting feeds is an error
+/// pointing at the rebuild.
+#[cfg(feature = "intel")]
+fn load_feeds(live: bool, opts: &IntelOpts) -> Result<cbna_core::ioc::IocSet> {
+    let only = feed_filter(&opts.intel_feeds);
+    if live {
+        let auth = resolve_auth_key(opts);
+        let (set, results) = cbna_intel::fetch_live(auth.as_deref(), only.as_deref())
+            .context("fetching threat-intel feeds")?;
+        report_feed_results(&results);
+        eprintln!("Loaded {} indicator(s) from live feeds", set.len());
+        Ok(set)
+    } else {
+        let dir = opts
+            .intel_cache_dir
+            .clone()
+            .unwrap_or_else(cbna_intel::default_cache_dir);
+        let set = cbna_intel::load(&dir).context("reading the threat-intel cache")?;
+        if set.is_empty() {
+            eprintln!(
+                "warning: no cached threat-intel indicators in {} — run `cbna intel update` first",
+                dir.display()
+            );
+        } else {
+            eprintln!(
+                "Loaded {} indicator(s) from the feed cache ({})",
+                set.len(),
+                dir.display()
+            );
+        }
+        Ok(set)
+    }
+}
+
+#[cfg(not(feature = "intel"))]
+fn load_feeds(_live: bool, _opts: &IntelOpts) -> Result<cbna_core::ioc::IocSet> {
+    bail!(
+        "this build has no threat-intel support. Rebuild with \
+         `cargo build --release --features intel`."
+    )
+}
+
+/// The Auth-Key from `--intel-auth-key`, or the `CBNA_ABUSECH_AUTHKEY`
+/// environment variable when the flag was not given.
+#[cfg(feature = "intel")]
+fn resolve_auth_key(opts: &IntelOpts) -> Option<String> {
+    opts.intel_auth_key
+        .clone()
+        .or_else(|| std::env::var("CBNA_ABUSECH_AUTHKEY").ok())
+        .filter(|k| !k.is_empty())
+}
+
+/// `None` for "all feeds", `Some(ids)` when the user named a subset.
+#[cfg(feature = "intel")]
+fn feed_filter(feeds: &[String]) -> Option<Vec<String>> {
+    if feeds.is_empty() {
+        None
+    } else {
+        Some(feeds.to_vec())
+    }
+}
+
+/// Print the outcome of each feed in an update or live fetch.
+#[cfg(feature = "intel")]
+fn report_feed_results(results: &[cbna_intel::FeedResult]) {
+    for r in results {
+        match &r.result {
+            Ok(n) => eprintln!("  {:<9} ok — {n} indicator(s)", r.id),
+            Err(e) => eprintln!("  {:<9} FAILED — {e} (kept last good cache)", r.id),
+        }
+    }
+}
+
+// --- intel subcommand -----------------------------------------------------
+
+#[cfg(feature = "intel")]
+fn cmd_intel(args: IntelArgs) -> Result<()> {
+    match args.cmd {
+        IntelCmd::Update(a) => intel_update(a.opts),
+        IntelCmd::List(a) => intel_list(a.opts),
+    }
+}
+
+#[cfg(feature = "intel")]
+fn intel_update(opts: IntelOpts) -> Result<()> {
+    let dir = opts
+        .intel_cache_dir
+        .clone()
+        .unwrap_or_else(cbna_intel::default_cache_dir);
+    let only = feed_filter(&opts.intel_feeds);
+    let auth = resolve_auth_key(&opts);
+    eprintln!("Updating feed cache in {}", dir.display());
+    let results = cbna_intel::update(&cbna_intel::UpdateOptions {
+        cache_dir: &dir,
+        auth_key: auth.as_deref(),
+        only: only.as_deref(),
+    })
+    .context("updating the threat-intel cache")?;
+    report_feed_results(&results);
+    // A run where every requested feed failed is worth a non-zero exit so a
+    // scheduled refresh surfaces the problem.
+    if !results.is_empty() && results.iter().all(|r| r.result.is_err()) {
+        bail!("all requested feeds failed to update");
+    }
+    Ok(())
+}
+
+#[cfg(feature = "intel")]
+fn intel_list(opts: IntelOpts) -> Result<()> {
+    let dir = opts
+        .intel_cache_dir
+        .clone()
+        .unwrap_or_else(cbna_intel::default_cache_dir);
+    let manifest = cbna_intel::cache::read_manifest(&dir).unwrap_or_default();
+
+    println!("Feed cache: {}", dir.display());
+    for feed in cbna_intel::BUILTIN {
+        let cached = manifest.feeds.iter().find(|c| c.id == feed.id);
+        let status = match cached {
+            Some(c) => format!("{} indicators, fetched {}", c.indicators, c.fetched_at),
+            None => "not cached".to_string(),
+        };
+        let auth = if feed.needs_auth {
+            " [needs Auth-Key]"
+        } else {
+            ""
+        };
+        println!("  {:<9} {}{auth}\n            {status}", feed.id, feed.name);
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "intel"))]
+fn cmd_intel(_args: IntelArgs) -> Result<()> {
+    bail!(
+        "this build has no threat-intel support. Rebuild with \
+         `cargo build --release --features intel`."
+    )
 }
 
 /// Highest-severity gate: `EXIT_FINDINGS_GATE` if any finding meets `threshold`,
@@ -470,6 +712,18 @@ mod tests {
                 assert_eq!(a.json.as_deref(), Some("out.json"));
                 assert_eq!(a.top, 5);
                 assert_eq!(a.tuning.beacon_jitter, Some(0.1));
+            }
+            other => panic!("expected analyze, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_analyze_with_an_ioc_list() {
+        let cli =
+            Cli::try_parse_from(["cbna", "analyze", "capture.pcap", "--ioc", "feed.txt"]).unwrap();
+        match cli.command {
+            Command::Analyze(a) => {
+                assert_eq!(a.ioc.as_deref(), Some(std::path::Path::new("feed.txt")));
             }
             other => panic!("expected analyze, got {other:?}"),
         }

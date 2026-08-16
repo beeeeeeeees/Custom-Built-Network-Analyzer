@@ -9,6 +9,17 @@ use crate::{FileSource, Source};
 use cbna_core::packet::decode;
 use std::hint::black_box;
 
+/// The indicator-list reader. It classifies attacker-influenceable text — a
+/// feed an analyst was handed — into an [`crate::ioc`] set, and must return
+/// normally on any bytes: no panic, and no allocation driven past the set's own
+/// cap. Reading the parsed set back is part of the target, the same way the DNS
+/// target reads its decoded names.
+pub fn ioc_list(data: &[u8]) {
+    let (set, warnings) = crate::ioc::parse_iocs(data);
+    black_box(set.len());
+    black_box(warnings.len());
+}
+
 /// Bound the loop. A valid header followed by a cheap repeating block can
 /// describe millions of packets in a few hundred bytes, and a fuzz iteration
 /// that runs for a minute finds nothing.

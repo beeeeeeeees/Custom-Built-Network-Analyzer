@@ -1,0 +1,23 @@
+[package]
+name = "cbna-intel"
+description = "Open-source threat-intel feed fetching and caching for cbna"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+# `net` pulls in the HTTP/TLS client for fetching feeds. Parsing and cache
+# loading work without it, so the fuzz harness can depend on this crate without
+# dragging rustls into its build.
+default = ["net"]
+net = ["dep:ureq"]
+
+[dependencies]
+cbna-core.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+thiserror.workspace = true
+# rustls-backed, blocking: no OpenSSL, deterministic Mozilla root store, fits a
+# CLI far better than an async stack.
+ureq = { version = "2", default-features = false, features = ["tls", "gzip"], optional = true }

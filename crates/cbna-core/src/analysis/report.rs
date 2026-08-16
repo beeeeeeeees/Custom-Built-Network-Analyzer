@@ -116,6 +116,52 @@ pub struct HttpOverview {
     pub top_user_agents: Vec<(String, u64)>,
 }
 
+/// One indicator that fired against observed traffic.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IocHit {
+    /// `ip`, `domain` or `ja3`.
+    pub kind: String,
+    /// The indicator as it was written in the list (a CIDR keeps its slash
+    /// form, a parent domain the parent it matched on).
+    pub indicator: String,
+    /// What was actually seen in the capture — the exact address, name or hash.
+    pub observed: String,
+    /// Where it turned up, e.g. `host`, `dns/sni` or `tls client`.
+    pub context: String,
+    /// The feed or list that supplied the indicator.
+    pub source: String,
+    /// The label the source attached (a malware family), when it carried one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    /// How much traffic backed the hit (packets for a host, lookups for a name,
+    /// handshakes for a JA3 hash).
+    pub count: u64,
+}
+
+/// Everything the loaded indicator list matched, grouped by kind.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct IocMatches {
+    /// Indicators loaded, for the "N of M" framing in a report.
+    pub indicators_loaded: usize,
+    /// One entry per contributing source with its snapshot time, so a run can
+    /// be reproduced against the same feed state.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<crate::ioc::SourceInfo>,
+    pub ip: Vec<IocHit>,
+    pub domain: Vec<IocHit>,
+    pub ja3: Vec<IocHit>,
+}
+
+impl IocMatches {
+    pub fn is_empty(&self) -> bool {
+        self.ip.is_empty() && self.domain.is_empty() && self.ja3.is_empty()
+    }
+
+    pub fn total(&self) -> usize {
+        self.ip.len() + self.domain.len() + self.ja3.len()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Report {
     /// Version of this JSON shape; see [`SCHEMA_VERSION`].
@@ -134,6 +180,10 @@ pub struct Report {
     pub http: HttpOverview,
     /// (unix second, packets, bytes) for the activity timeline.
     pub timeline: Vec<(i64, u64, u64)>,
+    /// Threat-intel indicators that matched, present only when an indicator list
+    /// was supplied. Additive, so its absence round-trips through older readers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ioc: Option<IocMatches>,
 }
 
 pub(super) fn build(a: &Analyzer, source: String) -> Report {
@@ -259,6 +309,7 @@ pub(super) fn build(a: &Analyzer, source: String) -> Report {
             .iter()
             .map(|(sec, (packets, bytes))| (*sec, *packets, *bytes))
             .collect(),
+        ioc: a.ioc_matches(),
     }
 }
 
