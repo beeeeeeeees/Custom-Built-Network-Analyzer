@@ -74,10 +74,13 @@ jobs:
           if [ "${{ runner.os }}" = "Linux" ]; then
             export LIBPCAP_LIBDIR=/usr/lib/x86_64-linux-gnu
           fi
+          # `intel` (OSINT threat-intel feeds) ships in every binary: it links
+          # rustls statically, so unlike `live` it adds no load-time dependency
+          # and costs nothing in portability.
           if [ "${{ matrix.live }}" = "true" ]; then
-            cargo build --release --locked -p cbna --features live
+            cargo build --release --locked -p cbna --features live,intel
           else
-            cargo build --release --locked -p cbna
+            cargo build --release --locked -p cbna --features intel
           fi
 
       - name: Smoke-test the binary
@@ -97,6 +100,8 @@ jobs:
             # A binary that cannot run is not a release artifact.
             "$BIN" --version
             "$BIN" --help > /dev/null
+            # Confirm the intel feature is compiled in (offline: lists feeds).
+            "$BIN" intel list > /dev/null
             cargo run --release --locked -p cbna --example make-sample -- sample.pcap
             "$BIN" analyze sample.pcap --findings-only --plain
           fi
@@ -173,6 +178,10 @@ jobs:
           start at all without it present — which is why both variants exist.
           Capturing also needs elevated privileges: Administrator on Windows,
           root or `CAP_NET_RAW` on Linux.
+
+          Every build includes threat-intel matching: `cbna intel update` to
+          fetch open-source feeds and `cbna analyze --intel` to match against
+          them (see the README).
 
           Verify a download against `SHA256SUMS`.
           EOF

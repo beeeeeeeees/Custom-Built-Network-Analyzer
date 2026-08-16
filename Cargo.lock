@@ -166,7 +166,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "cbna"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "cbna-capture",
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "cbna-capture"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cbna-core",
  "pcap",
@@ -191,7 +191,7 @@ dependencies = [
 
 [[package]]
 name = "cbna-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "md-5",
  "serde",
@@ -201,7 +201,7 @@ dependencies = [
 
 [[package]]
 name = "cbna-intel"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cbna-core",
  "serde",
@@ -212,7 +212,7 @@ dependencies = [
 
 [[package]]
 name = "cbna-web"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum",
